@@ -1,8 +1,159 @@
+# ============================================================
+# NETLIFY CONFIGURATION - FASO TICKET
+# Build sécurisé avec obfuscation
+# ============================================================
+
 [build]
-  command = "npm run build"
+  # ✅ Build sécurisé avec obfuscation
+  command = "npm run build:secure"
   publish = "dist"
 
 [build.environment]
-  # Les variables sont injectées par Netlify
   NODE_VERSION = "18"
   NPM_VERSION = "9"
+
+# ============================================================
+# REDIRECTIONS - SPA (Single Page Application)
+# ============================================================
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# ============================================================
+# HEADERS DE SÉCURITÉ
+# ============================================================
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Protection contre le clickjacking
+    X-Frame-Options = "DENY"
+    # Protection contre le MIME sniffing
+    X-Content-Type-Options = "nosniff"
+    # Protection contre les fuites de référent
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    # Politique des permissions
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+    # Cache des pages HTML (désactivé pour toujours avoir la dernière version)
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+# ============================================================
+# CACHE DES FICHIERS STATIQUES (assets)
+# ============================================================
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    # Cache long terme pour les assets (1 an)
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# ============================================================
+# CACHE DES FICHIERS JS (long terme)
+# ============================================================
+
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "application/javascript"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# ============================================================
+# CACHE DES FICHIERS CSS (long terme)
+# ============================================================
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Content-Type = "text/css"
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# ============================================================
+# CACHE DES IMAGES (long terme)
+# ============================================================
+
+[[headers]]
+  for = "/images/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/icons/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# ============================================================
+# CACHE DES FONTS (long terme)
+# ============================================================
+
+[[headers]]
+  for = "/*.woff"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/*.woff2"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# ============================================================
+# SITEMAP ET ROBOTS (pas de cache)
+# ============================================================
+
+[[headers]]
+  for = "/sitemap.xml"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+
+[[headers]]
+  for = "/robots.txt"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+
+# ============================================================
+# MANIFEST (PWA)
+# ============================================================
+
+[[headers]]
+  for = "/manifest.json"
+  [headers.values]
+    Content-Type = "application/json"
+    Cache-Control = "public, max-age=3600"
+
+# ============================================================
+# FAVICON
+# ============================================================
+
+[[headers]]
+  for = "/favicon.png"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/favicon.ico"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# ============================================================
+# PROTECTION CONTRE LE SCANNING
+# ============================================================
+
+[[headers]]
+  for = "/.env"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+
+[[headers]]
+  for = "/.git/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+
+# ============================================================
+# RÉPONSE 404 PERSONNALISÉE (redirigée vers index)
+# ============================================================
+
+[[redirects]]
+  from = "/404"
+  to = "/"
+  status = 404
