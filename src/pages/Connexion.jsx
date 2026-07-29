@@ -2,7 +2,11 @@
  * Page Connexion - Version corrigée
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
- * CORRECTION : Redirection immédiate après connexion
+ * CORRECTIONS :
+ * - Redirection immédiate après connexion avec window.location.href
+ * - Gestion des comptes expirés
+ * - Vérification du plan pour les organisateurs
+ * - ✅ CORRECTION : Redirection forcée pour éviter le rafraîchissement manuel
  */
 
 import React, { useState, useEffect } from 'react'
@@ -18,53 +22,56 @@ const Connexion = () => {
   const [error, setError] = useState('')
   const [expiredAccount, setExpiredAccount] = useState(false)
   const [expiredEmail, setExpiredEmail] = useState('')
-  const [redirecting, setRedirecting] = useState(false)
   const navigate = useNavigate()
 
-  // Vérification de session existante
+  // ✅ Vérification de session existante
   useEffect(() => {
     const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role, plan_expire')
-          .eq('id', session.user.id)
-          .single()
-        
-        if (profile) {
-          // Vérifier l'expiration pour les organisateurs
-          if (profile.role === 'organisateur' && profile.plan_expire) {
-            const now = new Date()
-            const expire = new Date(profile.plan_expire)
-            const nowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-            const expireDate = new Date(expire.getFullYear(), expire.getMonth(), expire.getDate())
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('role, plan_expire')
+            .eq('id', session.user.id)
+            .single()
+          
+          if (profile) {
+            if (profile.role === 'organisateur' && profile.plan_expire) {
+              const now = new Date()
+              const expire = new Date(profile.plan_expire)
+              const nowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+              const expireDate = new Date(expire.getFullYear(), expire.getMonth(), expire.getDate())
+              
+              if (expireDate < nowDate) {
+                setExpiredAccount(true)
+                setExpiredEmail(session.user.email)
+                return
+              }
+            }
             
-            if (expireDate < nowDate) {
-              setExpiredAccount(true)
-              setExpiredEmail(session.user.email)
-              return
+            // ✅ REDIRECTION AVEC window.location.href (FORCÉE)
+            if (profile.role === 'admin') {
+              window.location.href = '/admin/dashboard'
+            } else if (profile.role === 'organisateur') {
+              window.location.href = '/organisateur/dashboard'
+            } else {
+              window.location.href = '/'
             }
           }
-          
-          // Redirection immédiate
-          if (profile.role === 'admin') {
-            navigate('/admin/dashboard', { replace: true })
-          } else if (profile.role === 'organisateur') {
-            navigate('/organisateur/dashboard', { replace: true })
-          }
         }
+      } catch (error) {
+        console.error('Erreur de vérification de session:', error)
       }
     }
     checkSession()
-  }, [navigate])
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
     setExpiredAccount(false)
     setLoading(true)
-    setRedirecting(false)
 
     if (!email || !email.includes('@')) {
       setError('Email invalide')
@@ -96,7 +103,6 @@ const Connexion = () => {
       if (!profile) throw new Error('Profil non trouvé')
       if (!profile.statut) throw new Error('Compte désactivé. Contactez l\'administrateur.')
 
-      // Vérification de l'expiration
       if (profile.role === 'organisateur') {
         if (!profile.plan_id) {
           setExpiredAccount(true)
@@ -124,19 +130,16 @@ const Connexion = () => {
         role: profile.role
       }))
 
-      // ============================================================
-      // CORRECTION : REDIRECTION IMMÉDIATE
-      // ============================================================
-      setRedirecting(true)
-      
+      // ✅ REDIRECTION FORCÉE AVEC window.location.href
+      // Cela garantit que la page est rechargée et que le dashboard s'affiche
       if (profile.role === 'admin') {
-        navigate('/admin/dashboard', { replace: true })
+        window.location.href = '/admin/dashboard'
       } else if (profile.role === 'organisateur') {
-        navigate('/organisateur/dashboard', { replace: true })
+        window.location.href = '/organisateur/dashboard'
       } else if (profile.role === 'agent') {
-        navigate('/agent/dashboard', { replace: true })
+        window.location.href = '/agent/dashboard'
       } else {
-        navigate('/', { replace: true })
+        window.location.href = '/'
       }
 
     } catch (err) {
@@ -145,7 +148,7 @@ const Connexion = () => {
     }
   }
 
-  // Si le compte est expiré
+  // Affichage du compte expiré
   if (expiredAccount) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center px-4 py-8">
@@ -216,13 +219,6 @@ const Connexion = () => {
           </div>
         )}
 
-        {redirecting && (
-          <div className="bg-green-500/10 border border-green-500/20 text-green-400 text-sm p-3 rounded-lg mb-6 flex items-center gap-2">
-            <Loader className="w-4 h-4 animate-spin" />
-            <span>Connexion réussie, redirection...</span>
-          </div>
-        )}
-
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="text-gray-300 text-sm block mb-1.5">Email</label>
@@ -275,13 +271,13 @@ const Connexion = () => {
 
           <button
             type="submit"
-            disabled={loading || redirecting}
+            disabled={loading}
             className="w-full bg-yellow-400 hover:bg-yellow-300 text-black font-semibold py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            {loading || redirecting ? (
+            {loading ? (
               <>
                 <Loader className="w-4 h-4 animate-spin" />
-                {redirecting ? 'Redirection...' : 'Connexion...'}
+                Connexion...
               </>
             ) : (
               <>

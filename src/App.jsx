@@ -3,8 +3,9 @@
  * Règles NASA 1-10 appliquées
  * Sécurité niveau Google/Windows
  * Version complète et finale - Toutes les routes incluses
- * CORRECTION : Ajout des flags future pour React Router
- * AJOUT : Routes Messagerie
+ * AJOUTS : Route /organisateur/guide-gateway
+ * AJOUTS : Route /organisateur/supervision
+ * AJOUTS : Route /organisateur/scanner
  */
 
 import React, { lazy, Suspense } from 'react'
@@ -25,6 +26,7 @@ import DevenirOrganisateur from './pages/DevenirOrganisateur'
 import PaiementPlan from './pages/PaiementPlan'
 import TicketDetail from './pages/TicketDetail'
 import TicketGenere from './pages/TicketGenere'
+import Partenaires from './pages/Partenaires'
 
 // ============================================================
 // IMPORTS DES PAGES LÉGALES
@@ -57,6 +59,13 @@ import ConfigPaiementOrganisateur from './components/organisateur/ConfigPaiement
 import StatistiquesOrganisateur from './components/organisateur/StatistiquesOrganisateur'
 import GestionAgents from './components/organisateur/GestionAgents'
 import CodesPromoOrganisateur from './components/organisateur/CodesPromoOrganisateur'
+
+// ============================================================
+// IMPORTS DES NOUVELLES PAGES GATEWAY
+// ============================================================
+
+import GuideInstallationOrganisateur from './components/organisateur/GuideInstallationOrganisateur'
+import SupervisionGateway from './components/organisateur/SupervisionGateway'
 
 // ============================================================
 // IMPORT PAGE VÉRIFICATION TICKET
@@ -126,6 +135,12 @@ const AppRoutes = () => {
           <Route path="/devenir-organisateur" element={<DevenirOrganisateur />} />
           <Route path="/paiement-plan/:planId" element={<PaiementPlan />} />
           <Route path="/ticket/:id" element={<TicketGenere />} />
+          
+          {/* ============================================================
+              PAGE PARTENAIRES
+              ============================================================ */}
+          
+          <Route path="/partenaires" element={<Partenaires />} />
           
           {/* ============================================================
               PAGES LÉGALES
@@ -211,6 +226,28 @@ const AppRoutes = () => {
             element={
               <PrivateRoute requiredRole="organisateur">
                 <CodesPromoOrganisateur />
+              </PrivateRoute>
+            } 
+          />
+          
+          {/* ============================================================
+              NOUVELLES ROUTES GATEWAY SMS & SCANNER
+              ============================================================ */}
+          
+          <Route 
+            path="/organisateur/guide-gateway" 
+            element={
+              <PrivateRoute requiredRole="organisateur">
+                <GuideInstallationOrganisateur />
+              </PrivateRoute>
+            } 
+          />
+          
+          <Route 
+            path="/organisateur/supervision" 
+            element={
+              <PrivateRoute requiredRole="organisateur">
+                <SupervisionGateway />
               </PrivateRoute>
             } 
           />

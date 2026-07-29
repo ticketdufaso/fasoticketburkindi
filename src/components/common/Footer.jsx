@@ -1,6 +1,7 @@
 /**
  * Footer - Complet et responsive
  * Version corrigée avec liens WhatsApp et Facebook
+ * ✅ AJOUT : Lien "Nos partenaires" dans les liens utiles
  */
 
 import React from 'react'
@@ -38,7 +39,8 @@ const Footer = () => {
     { name: 'Boutique', path: '/boutique' },
     { name: 'Réserver un ticket', path: '/reservation' },
     { name: 'Espace organisateur', path: '/organisateur/dashboard' },
-    { name: 'Devenir organisateur', path: '/devenir-organisateur' }
+    { name: 'Devenir organisateur', path: '/devenir-organisateur' },
+    { name: 'Nos partenaires', path: '/partenaires' }  // ✅ AJOUT
   ]
 
   return (
@@ -164,6 +166,10 @@ const Footer = () => {
               © {currentYear} FASO TICKET. Tous droits réservés.
             </p>
             <div className="flex items-center gap-4 text-xs text-gray-500">
+              <Link to="/partenaires" className="hover:text-yellow-400 transition-colors">
+                Partenaires
+              </Link>
+              <span>|</span>
               <Link to="/politique-confidentialite" className="hover:text-yellow-400 transition-colors">
                 Confidentialité
               </Link>

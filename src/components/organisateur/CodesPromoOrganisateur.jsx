@@ -5,6 +5,9 @@
  * CORRECTIONS :
  * - Limite : Basique = 2 codes, Premium = 5 codes
  * - Affichage des limites dans l'UI
+ * - SUPPRESSION DU BOUTON SUPPRIMER (l'organisateur ne peut pas supprimer)
+ * - Activation/Désactivation uniquement (soft delete)
+ * - Désactivation automatique quand limite d'utilisations atteinte (trigger SQL)
  */
 
 import React, { useState, useEffect } from 'react'
@@ -12,9 +15,9 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../../context/AuthContext'
 import { supabase } from '../../lib/supabase'
 import { 
-  Code, Plus, Trash2, Edit, Loader, RefreshCw,
-  Search, CheckCircle, XCircle, AlertCircle,
-  ArrowLeft, Calendar, Clock, Percent, DollarSign,
+  Code, Plus, Loader, RefreshCw,
+  Search, CheckCircle, AlertCircle,
+  ArrowLeft, Calendar, Percent,
   Eye, EyeOff, Tag, Link, Users, Zap, Ticket
 } from 'lucide-react'
 
@@ -65,7 +68,7 @@ const CodesPromoOrganisateur = () => {
   }, [user])
 
   // ============================================================
-  // CORRECTION : PLAN INFO AVEC LIMITES (Basique=2, Premium=5)
+  // PLAN INFO AVEC LIMITES (Basique=2, Premium=5)
   // ============================================================
   const fetchPlanInfo = async () => {
     try {
@@ -83,7 +86,6 @@ const CodesPromoOrganisateur = () => {
           .single()
 
         if (planData) {
-          // ✅ CORRECTION : Surcharge des limites selon le plan
           let maxCodes = planData.codes_max || 0
           if (planData.nom === 'Basique') {
             maxCodes = 2
@@ -208,7 +210,7 @@ const CodesPromoOrganisateur = () => {
   }
 
   // ============================================================
-  // CORRECTION : AJOUT CODE AVEC VÉRIFICATION DES LIMITES
+  // AJOUT CODE PROMO
   // ============================================================
   const handleAddCode = async (e) => {
     e.preventDefault()
@@ -242,7 +244,6 @@ const CodesPromoOrganisateur = () => {
       return
     }
 
-    // ✅ CORRECTION : Vérification des limites selon le plan
     if (codes.length >= planInfo.codesMax) {
       setError(`Vous avez atteint la limite de ${planInfo.codesMax} codes pour votre plan ${planInfo.planNom}`)
       setSubmitting(false)
@@ -291,6 +292,10 @@ const CodesPromoOrganisateur = () => {
     }
   }
 
+  // ============================================================
+  // TOGGLE STATUS - UNIQUEMENT ACTIVATION/DÉSACTIVATION
+  // (PAS DE SUPPRESSION)
+  // ============================================================
   const handleToggleStatus = async (id, currentStatus) => {
     try {
       const { error } = await supabase
@@ -305,25 +310,6 @@ const CodesPromoOrganisateur = () => {
       setTimeout(() => setSuccess(''), 3000)
     } catch (error) {
       setError('Erreur lors du changement de statut')
-    }
-  }
-
-  const handleDeleteCode = async (id) => {
-    if (!confirm('Êtes-vous sûr de vouloir supprimer définitivement ce code promo ?')) return
-
-    try {
-      const { error } = await supabase
-        .from('codes_promo')
-        .delete()
-        .eq('id', id)
-        .eq('organisateur_id', user.id)
-
-      if (error) throw error
-      setSuccess('Code promo supprimé avec succès')
-      await fetchCodes()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (error) {
-      setError('Erreur lors de la suppression')
     }
   }
 
@@ -425,7 +411,6 @@ const CodesPromoOrganisateur = () => {
             <h1 className="text-2xl md:text-3xl font-bold text-white">
               Codes <span className="text-yellow-400">promotionnels</span>
             </h1>
-            {/* ✅ CORRECTION : Affichage des limites */}
             <p className="text-gray-400 text-sm mt-1">
               {codes.length} / {planInfo.codesMax} codes ({planInfo.planNom})
             </p>
@@ -460,6 +445,10 @@ const CodesPromoOrganisateur = () => {
               Les codes promo sont uniques à votre compte. 
               <span className="text-yellow-400 ml-2">
                 Limite: {planInfo.codesMax} codes pour le plan {planInfo.planNom}
+              </span>
+              <br />
+              <span className="text-gray-400 text-xs">
+                ⚠️ Les codes promo se désactivent automatiquement quand la limite d'utilisations est atteinte.
               </span>
             </p>
           </div>
@@ -509,7 +498,7 @@ const CodesPromoOrganisateur = () => {
           </div>
         )}
 
-        {/* Liste des codes */}
+        {/* Liste des codes - SANS BOUTON SUPPRIMER */}
         {filteredCodes.length === 0 ? (
           <div className="bg-gray-900 rounded-xl border border-gray-800 p-12 text-center">
             <Code className="w-16 h-16 text-gray-600 mx-auto mb-4 opacity-30" />
@@ -545,6 +534,11 @@ const CodesPromoOrganisateur = () => {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-yellow-400 font-mono text-lg font-bold">{code.code}</span>
                       {getStatusBadge(code)}
+                      {code.quantite_max > 0 && code.utilisations >= code.quantite_max && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-500/20 text-orange-400">
+                          ⚠️ Limite atteinte
+                        </span>
+                      )}
                     </div>
                     <div className="mt-2 space-y-1">
                       <p className="text-gray-300 text-sm flex items-center gap-1">
@@ -579,13 +573,7 @@ const CodesPromoOrganisateur = () => {
                     >
                       {code.actif ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
-                    <button
-                      onClick={() => handleDeleteCode(code.id)}
-                      className="text-gray-400 hover:text-red-400 transition-colors p-1"
-                      title="Supprimer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {/* ❌ BOUTON SUPPRIMER SUPPRIMÉ - L'ORGANISATEUR NE PEUT PAS SUPPRIMER */}
                   </div>
                 </div>
               </div>
@@ -742,6 +730,9 @@ const CodesPromoOrganisateur = () => {
                   placeholder="0 = illimité"
                   min="0"
                 />
+                <p className="text-gray-500 text-xs mt-1">
+                  ⚠️ Le code sera automatiquement désactivé quand cette limite sera atteinte.
+                </p>
               </div>
 
               {error && (

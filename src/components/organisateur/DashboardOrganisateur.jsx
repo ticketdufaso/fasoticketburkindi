@@ -3,8 +3,10 @@
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
  * CORRECTIONS :
- * - Suppression d'événement avec gestion des dépendances (types_tickets, ventes)
- * - Gestion de l'erreur 409 (Conflict)
+ * - SUPPRESSION du bouton "Télécharger" (l'organisateur ne peut plus télécharger)
+ * - Conservation UNIQUEMENT du bouton "Envoyer par WhatsApp"
+ * - WhatsApp : lien direct (pas de page intermédiaire)
+ * - est_telecharger ne change PAS quand l'organisateur agit
  */
 
 import React, { useState, useEffect } from 'react'
@@ -17,7 +19,8 @@ import {
   CreditCard, UserPlus, TrendingUp, DollarSign, ShoppingBag,
   Crown, Zap, Code, MessageSquare, FileText, Smartphone,
   Lock, Mail, Phone, CheckCircle, XCircle, Loader, RefreshCw,
-  FileSpreadsheet
+  FileSpreadsheet, Radio, Shield, Wifi, WifiOff,
+  ChevronRight, Award, Star
 } from 'lucide-react'
 
 const DashboardOrganisateur = () => {
@@ -50,12 +53,82 @@ const DashboardOrganisateur = () => {
   const [isExpired, setIsExpired] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0)
+
+  // ============================================================
+  // ÉTATS POUR LE GATEWAY SMS & SCANNER
+  // ============================================================
+  
+  const [gatewayStatus, setGatewayStatus] = useState({
+    estActif: false,
+    derniereConnexion: null,
+    appareilsConnectes: 0,
+    tokenAssocie: null,
+    cleExists: false
+  })
+  const [gatewayLoading, setGatewayLoading] = useState(true)
 
   useEffect(() => {
     if (user) {
       fetchAllData()
+      fetchUnreadMessagesCount()
+      fetchGatewayStatus()
     }
   }, [user])
+
+  // ============================================================
+  // RÉCUPÉRATION DU STATUT DU GATEWAY
+  // ============================================================
+
+  const fetchGatewayStatus = async () => {
+    try {
+      setGatewayLoading(true)
+      
+      const { data: tokenData, error: tokenError } = await supabase
+        .from('association_tokens')
+        .select('token_cle, derniere_utilisation, actif')
+        .eq('organisateur_id', user.id)
+        .eq('actif', true)
+        .maybeSingle()
+
+      if (tokenError && tokenError.code !== 'PGRST116') {
+        throw tokenError
+      }
+
+      if (tokenData) {
+        const derniereUtilisation = tokenData.derniere_utilisation 
+          ? new Date(tokenData.derniere_utilisation) 
+          : null
+        
+        const estActif = tokenData.actif && derniereUtilisation && 
+          (Date.now() - derniereUtilisation.getTime()) < 24 * 60 * 60 * 1000
+
+        setGatewayStatus({
+          estActif: estActif,
+          derniereConnexion: derniereUtilisation,
+          appareilsConnectes: 0,
+          tokenAssocie: tokenData.token_cle,
+          cleExists: true
+        })
+      } else {
+        setGatewayStatus({
+          estActif: false,
+          derniereConnexion: null,
+          appareilsConnectes: 0,
+          tokenAssocie: null,
+          cleExists: false
+        })
+      }
+    } catch (error) {
+      console.error('Erreur récupération statut Gateway:', error)
+    } finally {
+      setGatewayLoading(false)
+    }
+  }
+
+  // ============================================================
+  // FONCTIONS EXISTANTES
+  // ============================================================
 
   const fetchAllData = async () => {
     try {
@@ -257,21 +330,39 @@ const DashboardOrganisateur = () => {
     }
   }
 
+  const fetchUnreadMessagesCount = async () => {
+    if (!user) return
+
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('organisateur_id', user.id)
+        .eq('is_deleted', false)
+        .eq('lu', false)
+        .eq('sender', 'admin')
+
+      if (error) throw error
+      const count = data?.length || 0
+      setUnreadMessagesCount(count)
+    } catch (error) {
+      console.error('Erreur comptage messages:', error)
+    }
+  }
+
   const handleRefresh = async () => {
     setRefreshing(true)
     await fetchAllData()
+    await fetchUnreadMessagesCount()
+    await fetchGatewayStatus()
     setRefreshing(false)
   }
 
-  // ============================================================
-  // CORRECTION : SUPPRESSION D'ÉVÉNEMENT AVEC GESTION DES DÉPENDANCES
-  // ============================================================
   const handleDeleteEvent = async (eventId) => {
     if (!confirm('Êtes-vous sûr de vouloir supprimer définitivement cet événement ?')) return
     if (!confirm('Cette action est irréversible. Tous les tickets et ventes associés seront supprimés.')) return
 
     try {
-      // 1. Récupérer les types de tickets de l'événement
       const { data: ticketTypes, error: ticketError } = await supabase
         .from('types_tickets')
         .select('id')
@@ -279,7 +370,6 @@ const DashboardOrganisateur = () => {
 
       if (ticketError) throw ticketError
 
-      // 2. Si des types de tickets existent, supprimer les ventes associées
       if (ticketTypes && ticketTypes.length > 0) {
         const ticketIds = ticketTypes.map(t => t.id)
         
@@ -290,10 +380,8 @@ const DashboardOrganisateur = () => {
 
         if (ventesError) {
           console.error('Erreur suppression ventes:', ventesError)
-          // Ne pas bloquer la suppression si les ventes ne peuvent pas être supprimées
         }
 
-        // 3. Supprimer les types de tickets
         const { error: deleteTypesError } = await supabase
           .from('types_tickets')
           .delete()
@@ -305,7 +393,6 @@ const DashboardOrganisateur = () => {
         }
       }
 
-      // 4. Supprimer l'événement
       const { error: deleteEventError } = await supabase
         .from('evenements')
         .delete()
@@ -313,7 +400,6 @@ const DashboardOrganisateur = () => {
         .eq('organisateur_id', user.id)
 
       if (deleteEventError) {
-        // Gestion de l'erreur 409 (Conflict)
         if (deleteEventError.code === '409' || deleteEventError.message?.includes('violates foreign key')) {
           setError('❌ Cet événement a des dépendances (ventes, réservations). Veuillez contacter l\'administrateur.')
           setTimeout(() => setError(''), 5000)
@@ -338,28 +424,19 @@ const DashboardOrganisateur = () => {
 
   const [success, setSuccess] = useState('')
 
-  const handleDownloadTicket = async (vente) => {
-    if (downloading) return
-    
-    setDownloading(true)
-    try {
-      const url = `${window.location.origin}/ticket/${vente.id}`
-      window.open(url, '_blank')
-    } catch (error) {
-      console.error('Erreur:', error)
-      alert('Erreur lors du téléchargement')
-    } finally {
-      setDownloading(false)
-    }
-  }
+  // ============================================================
+  // ENVOI WHATSAPP DIRECT - ORGANISATEUR (UNIQUEMENT)
+  // ============================================================
 
   const handleSendWhatsApp = (vente) => {
     if (!vente.client_whatsapp) {
-      alert('Numéro WhatsApp non disponible')
+      setError('Numéro WhatsApp non disponible')
+      setTimeout(() => setError(''), 3000)
       return
     }
 
     const siteUrl = window.location.origin
+    // ✅ Lien direct vers le ticket (téléchargement automatique)
     const lienTelechargement = `${siteUrl}/ticket/${vente.id}`
     const nomEvenement = vente.evenement?.nom || 'N/A'
     const dateEvenement = vente.evenement?.date ? formatDate(vente.evenement.date) : 'N/A'
@@ -372,7 +449,7 @@ const DashboardOrganisateur = () => {
 
 🔗 Lien : ${lienTelechargement}
 
-📌 Ce lien vous permet de télécharger votre ticket à tout moment.
+📌 Ce lien télécharge automatiquement votre ticket.
 
 Merci pour votre achat.
 🎫 FASO TICKET - Ma meilleure billetterie en ligne.`
@@ -381,7 +458,14 @@ Merci pour votre achat.
       ? vente.client_whatsapp 
       : `226${vente.client_whatsapp}`
     
+    // ✅ Redirection directe vers WhatsApp
     window.open(`https://wa.me/${numero}?text=${encodeURIComponent(message)}`, '_blank')
+    
+    // ✅ L'organisateur ne modifie PAS est_telecharger
+    // La colonne est_telecharger reste inchangée
+    
+    setSuccess('✅ Lien envoyé par WhatsApp !')
+    setTimeout(() => setSuccess(''), 3000)
   }
 
   const handleExportPDF = async () => {
@@ -545,6 +629,18 @@ Merci pour votre achat.
     return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${c.color}`}>{c.label}</span>
   }
 
+  // ============================================================
+  // NAVIGATION VERS LE GUIDE (TOUS PEUVENT Y ACCÉDER)
+  // ============================================================
+
+  const handleActivateGateway = () => {
+    navigate('/organisateur/guide-gateway')
+  }
+
+  // ============================================================
+  // RENDU
+  // ============================================================
+
   if (!loading && isExpired) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center px-4">
@@ -707,7 +803,7 @@ Merci pour votre achat.
         </div>
 
         {/* ===== BOUTONS D'ACTION ===== */}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 md:gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-3 md:gap-4 mb-8">
           <Link
             to="/organisateur/evenement/creer"
             className="bg-gray-900 hover:bg-gray-800 p-4 rounded-xl border border-gray-800 text-center transition-colors"
@@ -768,7 +864,8 @@ Merci pour votre achat.
               </span>
             </button>
           ) : (
-            <button              onClick={() => setShowUpgradeModal(true)}
+            <button
+              onClick={() => setShowUpgradeModal(true)}
               className="bg-gray-900 hover:bg-gray-800 p-4 rounded-xl border border-gray-800 text-center transition-colors cursor-pointer"
             >
               <FileSpreadsheet className="w-6 h-6 text-gray-500 mx-auto mb-1" />
@@ -776,13 +873,59 @@ Merci pour votre achat.
             </button>
           )}
 
+          {/* ============================================================
+              BOUTON GATEWAY SMS & SCANNER - UTILISABLE PAR TOUS
+              ============================================================ */}
+          <button
+            onClick={handleActivateGateway}
+            className="bg-gray-900 hover:bg-gray-800 p-4 rounded-xl border border-gray-800 text-center transition-colors relative group"
+          >
+            <div className="relative">
+              <Radio className="w-6 h-6 text-yellow-400 mx-auto mb-1" />
+              {gatewayStatus.estActif && (
+                <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-400 rounded-full animate-pulse" />
+              )}
+            </div>
+            <span className="text-gray-300 text-xs">Gateway SMS & Scanner</span>
+            <div className="text-[10px] text-gray-500 mt-0.5">
+              {gatewayLoading ? (
+                '...'
+              ) : gatewayStatus.estActif ? (
+                <span className="text-green-400 flex items-center justify-center gap-1">
+                  <Wifi className="w-3 h-3" /> Connecté
+                </span>
+              ) : gatewayStatus.cleExists ? (
+                <span className="text-yellow-400 flex items-center justify-center gap-1">
+                  <WifiOff className="w-3 h-3" /> Déconnecté
+                </span>
+              ) : (
+                <span className="text-gray-500">Non configuré</span>
+              )}
+            </div>
+            {!planInfo.estPremium ? (
+              <div className="text-[8px] text-gray-500 mt-0.5">
+                🔑 1 clé max
+              </div>
+            ) : (
+              <div className="text-[8px] text-yellow-400 mt-0.5">
+                ⭐ Clés illimitées
+              </div>
+            )}
+          </button>
+
+          {/* Messagerie */}
           {planInfo.estPremium ? (
             <Link
               to="/organisateur/messagerie"
-              className="bg-gray-900 hover:bg-gray-800 p-4 rounded-xl border border-gray-800 text-center transition-colors"
+              className="bg-gray-900 hover:bg-gray-800 p-4 rounded-xl border border-gray-800 text-center transition-colors relative"
             >
               <MessageSquare className="w-6 h-6 text-yellow-400 mx-auto mb-1" />
               <span className="text-gray-300 text-xs">Messagerie</span>
+              {unreadMessagesCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center animate-pulse">
+                  {unreadMessagesCount}
+                </span>
+              )}
             </Link>
           ) : (
             <button
@@ -894,7 +1037,7 @@ Merci pour votre achat.
           )}
         </div>
 
-        {/* ===== DERNIÈRES VENTES ===== */}
+        {/* ===== DERNIÈRES VENTES (UNIQUEMENT WHATSAPP) ===== */}
         {planInfo.estPremium && (
           <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
             <div className="p-4 md:p-6 border-b border-gray-800 flex justify-between items-center">
@@ -958,22 +1101,7 @@ Merci pour votre achat.
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => handleDownloadTicket(vente)}
-                              disabled={downloading}
-                              className={`transition-colors p-1 ${
-                                downloading 
-                                  ? 'text-gray-500 cursor-not-allowed' 
-                                  : 'text-gray-400 hover:text-yellow-400'
-                              }`}
-                              title="Télécharger le ticket"
-                            >
-                              {downloading ? (
-                                <Loader className="w-4 h-4 animate-spin" />
-                              ) : (
-                                <Download className="w-4 h-4" />
-                              )}
-                            </button>
+                            {/* ===== UNIQUEMENT WHATSAPP (PAS DE TÉLÉCHARGEMENT) ===== */}
                             {vente.client_whatsapp && (
                               <button
                                 onClick={() => handleSendWhatsApp(vente)}
@@ -1044,6 +1172,18 @@ Merci pour votre achat.
                 <li className="flex items-center gap-2 text-gray-300">
                   <CheckCircle className="w-4 h-4 text-green-400" />
                   Messagerie avec l'administration
+                </li>
+                <li className="flex items-center gap-2 text-gray-300">
+                  <CheckCircle className="w-4 h-4 text-green-400" />
+                  <span className="text-yellow-400 font-medium">📱 Gateway SMS & Scanner (clés illimitées)</span>
+                </li>
+                <li className="flex items-center gap-2 text-gray-300">
+                  <CheckCircle className="w-4 h-4 text-green-400" />
+                  <span className="text-yellow-400 font-medium">👥 Supervision des agents en temps réel</span>
+                </li>
+                <li className="flex items-center gap-2 text-gray-300">
+                  <CheckCircle className="w-4 h-4 text-green-400" />
+                  <span className="text-yellow-400 font-medium">🔄 Génération illimitée de clés d'association</span>
                 </li>
               </ul>
 

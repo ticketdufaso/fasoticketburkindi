@@ -3,9 +3,13 @@
  * Règles NASA 1, 4, 5, 6, 7
  * Sécurité niveau Google/Windows
  * CORRECTIONS :
- * - Affichage des commentaires avec leurs réponses
- * - Rafraîchissement forcé des commentaires
- * - Logs de débogage
+ * - Suppression de la section "Nos partenaires"
+ * - Section "Nos sponsors" en bas, juste avant le footer
+ * - Sponsors en cercle (format rond)
+ * - Boutons : Acheter, Réserver, Devenir organisateur, Connexion
+ * - Vérification du stock pour chaque événement (bouton "Voir" grisé si stock = 0)
+ * - Affichage "COMPLET" sur les cartes d'événements épuisés
+ * - Mise à jour en temps réel via Supabase Realtime
  */
 
 import React, { useState, useEffect, useCallback } from 'react'
@@ -27,23 +31,21 @@ import {
   MessageCircle,
   ThumbsUp,
   Send,
-  RefreshCw
+  RefreshCw,
+  ExternalLink,
+  Building2,
+  ChevronRight,
+  LogIn
 } from 'lucide-react'
 
 const Home = () => {
-  // État des statistiques
-  const [stats, setStats] = useState({
-    totalEvenements: 0,
-    totalOrganisateurs: 0,
-    totalTicketsVendus: 0
-  })
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [refreshKey, setRefreshKey] = useState(0)
-
   // État des événements
   const [evenements, setEvenements] = useState([])
   const [commentaires, setCommentaires] = useState([])
+  
+  // État des sponsors
+  const [sponsors, setSponsors] = useState([])
+  const [visibleSponsors, setVisibleSponsors] = useState(6)
   
   // État du formulaire de commentaire
   const [newComment, setNewComment] = useState({ 
@@ -53,16 +55,17 @@ const Home = () => {
   })
   
   // États de chargement
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [visibleComments, setVisibleComments] = useState(6)
+  
+  // État pour les stocks des événements
+  const [stockData, setStockData] = useState({})
 
-  /**
-   * Règle NASA 4: Fonction courte (< 60 lignes)
-   * Règle NASA 5: Au moins 2 assertions
-   * Règle NASA 7: Validation des données
-   */
   const fetchData = useCallback(async (forceRefresh = false) => {
     try {
       if (forceRefresh) {
@@ -72,36 +75,7 @@ const Home = () => {
       }
       setError('')
 
-      // ============================================================
-      // COMPTAGE DES ORGANISATEURS
-      // ============================================================
-      
-      const timestamp = Date.now()
-      
-      const { count: organisateursCount, error: orgError } = await supabase
-        .from('profiles')
-        .select('*', { count: 'exact', head: true })
-        .eq('role', 'organisateur')
-
-      const { count: evenementsCount, error: eventsError } = await supabase
-        .from('evenements')
-        .select('*', { count: 'exact', head: true })
-        .eq('actif', true)
-
-      const { count: ventesCount, error: ventesError } = await supabase
-        .from('ventes')
-        .select('*', { count: 'exact', head: true })
-
-      setStats({
-        totalEvenements: evenementsCount || 0,
-        totalOrganisateurs: organisateursCount || 0,
-        totalTicketsVendus: ventesCount || 0
-      })
-
-      // ============================================================
-      // ÉVÉNEMENTS À LA UNE
-      // ============================================================
-      
+      // 1. Récupérer les événements à la une (Premium)
       const { data: premiumOrganisateurs, error: premiumError } = await supabase
         .from('profiles')
         .select('id')
@@ -125,17 +99,18 @@ const Home = () => {
           .limit(12)
 
         if (!eventsFetchError && events) {
+          // Calculer le stock total pour chaque événement
+          const stockMap = {}
+          events.forEach(event => {
+            const totalStock = event.types_tickets?.reduce((sum, t) => sum + (t.stock || 0), 0) || 0
+            stockMap[event.id] = totalStock
+          })
+          setStockData(stockMap)
           setEvenements(events)
         }
       }
 
-      // ============================================================
-      // COMMENTAIRES AVEC LEURS RÉPONSES
-      // ============================================================
-      
-      console.log('🔄 Début récupération des commentaires...')
-      
-      // ✅ CORRECTION : Récupérer les commentaires avec leurs réponses
+      // 2. Récupérer les commentaires
       const { data: allComments, error: commentsError } = await supabase
         .from('commentaires')
         .select(`
@@ -143,33 +118,38 @@ const Home = () => {
           reponses:reponses_avis(*)
         `)
         .order('created_at', { ascending: false })
-        .limit(50)
-
-      console.log('📊 ERREUR commentaires:', commentsError)
-      console.log('📊 NOMBRE de commentaires récupérés:', allComments?.length || 0)
+        .limit(30)
 
       if (!commentsError && allComments && allComments.length > 0) {
-        // Afficher les détails des commentaires avec leurs réponses
-        allComments.forEach((c, index) => {
-          console.log(`  ${index + 1}. ID: ${c.id}, Nom: ${c.nom}, Note: ${c.note}, Statut: "${c.statut}", Réponses: ${c.reponses?.length || 0}`)
-        })
-
-        // Filtrer les commentaires visibles
         const commentairesVisibles = allComments.filter(comment => {
           if (!comment.statut) return true
           const statutLower = comment.statut.toLowerCase().trim()
           const statutsExclus = ['supprime', 'rejete', 'rejeté']
           return !statutsExclus.includes(statutLower)
         })
-        
-        console.log('📊 Commentaires visibles:', commentairesVisibles.length)
         setCommentaires(commentairesVisibles)
-      } else if (!commentsError && allComments && allComments.length === 0) {
-        console.log('📊 Aucun commentaire trouvé')
+      } else {
         setCommentaires([])
-      } else if (commentsError) {
-        console.error('❌ Erreur:', commentsError)
-        setCommentaires([])
+      }
+
+      // 3. Récupérer les sponsors actifs
+      const { data: sponsorsData, error: sponsorsError } = await supabase
+        .from('sponsors')
+        .select('*')
+        .eq('actif', true)
+        .order('ordre', { ascending: true })
+
+      if (!sponsorsError && sponsorsData) {
+        const sponsorsAvecLien = sponsorsData.map(sponsor => {
+          let lien = sponsor.lien || ''
+          if (lien && !lien.startsWith('http://') && !lien.startsWith('https://')) {
+            lien = `https://${lien}`
+          }
+          return { ...sponsor, lien }
+        })
+        setSponsors(sponsorsAvecLien)
+      } else {
+        setSponsors([])
       }
 
     } catch (err) {
@@ -182,9 +162,12 @@ const Home = () => {
   }, [])
 
   const handleRefresh = () => {
-    console.log('🔄 Rafraîchissement manuel...')
     setRefreshKey(prev => prev + 1)
     fetchData(true)
+  }
+
+  const loadMoreSponsors = () => {
+    setVisibleSponsors(prev => prev + 6)
   }
 
   const handleSubmitComment = async (e) => {
@@ -220,8 +203,6 @@ const Home = () => {
         statut: 'visible'
       }
 
-      console.log('📤 Envoi du commentaire:', commentData)
-
       const { data, error } = await supabase
         .from('commentaires')
         .insert([commentData])
@@ -231,8 +212,6 @@ const Home = () => {
         console.error('❌ Erreur insertion:', error)
         throw error
       }
-
-      console.log('✅ Commentaire inséré:', data)
 
       setSuccess('✅ Merci ! Votre avis est visible immédiatement.')
       setNewComment({ nom: '', note: 5, commentaire: '' })
@@ -294,31 +273,48 @@ const Home = () => {
   }
 
   const displayedComments = commentaires.slice(0, visibleComments)
+  const displayedSponsors = sponsors.slice(0, visibleSponsors)
+
+  const getTotalStock = (eventId) => {
+    return stockData[eventId] || 0
+  }
+
+  const isEventAvailable = (eventId) => {
+    return getTotalStock(eventId) > 0
+  }
 
   useEffect(() => {
-    console.log('🔄 Chargement initial...')
     fetchData()
 
     const subscription = supabase
-      .channel('commentaires_changes')
+      .channel('home_changes')
       .on('postgres_changes', 
         { event: 'INSERT', schema: 'public', table: 'commentaires' },
         () => {
-          console.log('🔄 Nouveau commentaire détecté, rechargement...')
           fetchData(true)
         }
       )
       .on('postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'commentaires' },
         () => {
-          console.log('🔄 Mise à jour détectée, rechargement...')
           fetchData(true)
         }
       )
       .on('postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'commentaires' },
+        { event: '*', schema: 'public', table: 'sponsors' },
         () => {
-          console.log('🔄 Suppression détectée, rechargement...')
+          fetchData(true)
+        }
+      )
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'evenements' },
+        () => {
+          fetchData(true)
+        }
+      )
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'types_tickets' },
+        () => {
           fetchData(true)
         }
       )
@@ -332,7 +328,7 @@ const Home = () => {
   return (
     <div className="min-h-screen bg-black">
       {/* ===== HERO SECTION ===== */}
-      <section className="relative min-h-[70vh] flex items-center justify-center px-4 py-20 overflow-hidden">
+      <section className="relative min-h-[60vh] flex items-center justify-center px-4 py-16 overflow-hidden">
         <div className="absolute inset-0 opacity-10">
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-yellow-400 rounded-full blur-3xl"></div>
         </div>
@@ -346,7 +342,7 @@ const Home = () => {
             La billetterie simple, rapide et sécurisée pour vos événements au Burkina Faso
           </p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mt-8 md:mt-12 max-w-4xl mx-auto animate-slide-up">
+          <div className="flex flex-wrap justify-center gap-3 md:gap-4 mt-8 md:mt-12 max-w-3xl mx-auto animate-slide-up">
             <Link
               to="/boutique"
               className="bg-yellow-400 hover:bg-yellow-300 text-black font-semibold py-3 md:py-4 px-4 md:px-6 rounded-xl transition-all transform hover:scale-105 flex items-center justify-center space-x-2 text-sm md:text-base shadow-lg hover:shadow-yellow-400/25"
@@ -372,51 +368,15 @@ const Home = () => {
               to="/connexion"
               className="bg-gray-700 hover:bg-gray-600 text-white font-semibold py-3 md:py-4 px-4 md:px-6 rounded-xl transition-all transform hover:scale-105 flex items-center justify-center space-x-2 border border-gray-600 text-sm md:text-base"
             >
-              <Shield className="w-4 h-4 md:w-5 md:h-5" />
-              <span>Espace organisateur</span>
+              <LogIn className="w-4 h-4 md:w-5 md:h-5" />
+              <span>Connexion</span>
             </Link>
           </div>
         </div>
       </section>
 
-      {/* ===== STATISTIQUES ===== */}
-      <section className="py-12 md:py-16 px-4 border-t border-yellow-400/10 border-b border-yellow-400/10 bg-gray-900/30">
-        <div className="max-w-5xl mx-auto">
-          <div className="flex justify-end mb-4">
-            <button
-              onClick={handleRefresh}
-              disabled={refreshing}
-              className="flex items-center gap-2 text-gray-400 hover:text-yellow-400 transition-colors text-sm disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-              {refreshing ? 'Rafraîchissement...' : 'Rafraîchir'}
-            </button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 md:gap-8">
-            <div className="text-center p-4 rounded-xl bg-black/50 border border-gray-800">
-              <div className="text-3xl md:text-5xl font-bold text-yellow-400">
-                {loading ? '...' : stats.totalEvenements}
-              </div>
-              <div className="text-gray-400 mt-2 text-sm md:text-base">Événements</div>
-            </div>
-            <div className="text-center p-4 rounded-xl bg-black/50 border border-gray-800">
-              <div className="text-3xl md:text-5xl font-bold text-yellow-400">
-                {loading ? '...' : stats.totalOrganisateurs}
-              </div>
-              <div className="text-gray-400 mt-2 text-sm md:text-base">Organisateurs</div>
-            </div>
-            <div className="text-center p-4 rounded-xl bg-black/50 border border-gray-800">
-              <div className="text-3xl md:text-5xl font-bold text-yellow-400">
-                {loading ? '...' : stats.totalTicketsVendus}
-              </div>
-              <div className="text-gray-400 mt-2 text-sm md:text-base">Tickets vendus</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* ===== AVANTAGES ===== */}
-      <section className="py-12 md:py-16 px-4">
+      <section className="py-12 md:py-16 px-4 border-t border-yellow-400/10">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-2xl md:text-3xl font-bold text-white text-center mb-8 md:mb-12">
             Pourquoi <span className="text-yellow-400">FASO TICKET</span> ?
@@ -447,7 +407,7 @@ const Home = () => {
       </section>
 
       {/* ===== ÉVÉNEMENTS À LA UNE ===== */}
-      <section className="py-12 md:py-16 px-4 bg-gray-900/30 border-t border-yellow-400/10">
+      <section className="py-12 md:py-16 px-4 border-t border-yellow-400/10">
         <div className="max-w-7xl mx-auto">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8 md:mb-10">
             <h2 className="text-2xl md:text-4xl font-bold text-white">
@@ -487,59 +447,149 @@ const Home = () => {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
-              {evenements.map((event) => (
-                <div 
-                  key={event.id} 
-                  className="bg-gray-900 rounded-xl overflow-hidden hover:transform hover:scale-[1.02] transition-all duration-300 border border-gray-800 hover:border-yellow-400/30"
+              {evenements.map((event) => {
+                const totalStock = getTotalStock(event.id)
+                const isAvailable = totalStock > 0
+                
+                return (
+                  <div 
+                    key={event.id} 
+                    className="bg-gray-900 rounded-xl overflow-hidden hover:transform hover:scale-[1.02] transition-all duration-300 border border-gray-800 hover:border-yellow-400/30"
+                  >
+                    <div className="relative">
+                      <img
+                        src={event.affiche_url || '/images/default-event.jpg'}
+                        alt={event.nom}
+                        className="w-full h-48 object-cover"
+                        loading="lazy"
+                        onError={(e) => {
+                          e.target.src = '/images/default-event.jpg'
+                          e.target.onerror = null
+                        }}
+                      />
+                      {event.types_tickets && event.types_tickets.length > 0 && (
+                        <div className="absolute top-2 right-2 bg-yellow-400 text-black text-xs font-bold px-3 py-1 rounded-full shadow-lg">
+                          {totalStock} places
+                        </div>
+                      )}
+                      {!isAvailable && (
+                        <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+                          <div className="bg-red-500/90 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4" />
+                            COMPLET
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-4">
+                      <h3 className="text-white font-semibold text-base md:text-lg truncate">{event.nom}</h3>
+                      <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
+                        <Clock className="w-3 h-3 flex-shrink-0" />
+                        <span>{formatDate(event.date)}</span>
+                      </p>
+                      <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
+                        <MapPin className="w-3 h-3 flex-shrink-0" />
+                        <span className="truncate">{event.lieu}</span>
+                      </p>
+                      {event.organisateur && (
+                        <p className="text-gray-500 text-xs mt-1">{event.organisateur.structure}</p>
+                      )}
+                      <div className="flex flex-wrap gap-1 md:gap-2 mt-2 md:mt-3">
+                        {event.types_tickets && event.types_tickets.slice(0, 3).map((type) => (
+                          <span key={type.id} className="bg-gray-800 text-gray-300 text-[10px] md:text-xs px-2 py-1 rounded">
+                            {type.nom}: {type.prix?.toLocaleString()} FCFA
+                          </span>
+                        ))}
+                        {event.types_tickets && event.types_tickets.length > 3 && (
+                          <span className="text-gray-500 text-xs">+{event.types_tickets.length - 3}</span>
+                        )}
+                      </div>
+                      
+                      {/* ===== BOUTON "VOIR" AVEC GESTION DU STOCK ===== */}
+                      {isAvailable ? (
+                        <Link
+                          to={`/boutique/${event.id}`}
+                          className="block mt-3 md:mt-4 bg-yellow-400 hover:bg-yellow-300 text-black text-center font-medium py-2 rounded-lg transition-colors text-sm md:text-base"
+                        >
+                          Voir
+                        </Link>
+                      ) : (
+                        <button
+                          disabled
+                          className="block mt-3 md:mt-4 bg-gray-700 text-gray-400 text-center font-medium py-2 rounded-lg cursor-not-allowed text-sm md:text-base w-full"
+                        >
+                          Complet
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ===== SPONSORS - DERNIÈRE SECTION AVANT LE FOOTER ===== */}
+      <section className="py-12 md:py-16 px-4 bg-gray-900/30 border-t border-yellow-400/10 border-b border-yellow-400/10">
+        <div className="max-w-7xl mx-auto">
+          <div className="flex items-center justify-between mb-8 md:mb-10">
+            <h2 className="text-2xl md:text-4xl font-bold text-white">
+              Nos <span className="text-yellow-400">sponsors</span>
+            </h2>
+            {sponsors.length > visibleSponsors && (
+              <button
+                onClick={loadMoreSponsors}
+                className="text-yellow-400 hover:text-yellow-300 transition-colors text-sm font-medium flex items-center gap-1"
+              >
+                Voir plus
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <div className="w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          ) : sponsors.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <Award className="w-12 h-12 mx-auto mb-2 opacity-30" />
+              <p>Aucun sponsor pour le moment</p>
+              <p className="text-sm text-gray-500">Revenez plus tard</p>
+            </div>
+          ) : (
+            <div className="flex flex-wrap justify-center gap-6 md:gap-8">
+              {displayedSponsors.map((sponsor) => (
+                <a
+                  key={sponsor.id}
+                  href={sponsor.lien}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group flex flex-col items-center transition-all duration-300 hover:transform hover:scale-110"
                 >
-                  <div className="relative">
-                    <img
-                      src={event.affiche_url || '/images/default-event.jpg'}
-                      alt={event.nom}
-                      className="w-full h-48 object-cover"
-                      loading="lazy"
-                      onError={(e) => {
-                        e.target.src = '/images/default-event.jpg'
-                        e.target.onerror = null
-                      }}
-                    />
-                    {event.types_tickets && event.types_tickets.length > 0 && (
-                      <div className="absolute top-2 right-2 bg-yellow-400 text-black text-xs font-bold px-3 py-1 rounded-full shadow-lg">
-                        {event.types_tickets.reduce((sum, t) => sum + (t.stock || 0), 0)} places
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 rounded-full bg-gray-800 border-2 border-gray-700 group-hover:border-yellow-400/50 transition-all duration-300 flex items-center justify-center overflow-hidden p-2">
+                    {sponsor.image_url ? (
+                      <img
+                        src={sponsor.image_url}
+                        alt={sponsor.nom}
+                        className="w-full h-full object-contain rounded-full"
+                        loading="lazy"
+                        onError={(e) => {
+                          e.target.src = '/images/default-sponsor.png'
+                          e.target.onerror = null
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-gray-700 rounded-full flex items-center justify-center">
+                        <Building2 className="w-8 h-8 sm:w-10 sm:h-10 text-gray-500" />
                       </div>
                     )}
                   </div>
-                  <div className="p-4">
-                    <h3 className="text-white font-semibold text-base md:text-lg truncate">{event.nom}</h3>
-                    <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
-                      <Clock className="w-3 h-3 flex-shrink-0" />
-                      <span>{formatDate(event.date)}</span>
-                    </p>
-                    <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
-                      <MapPin className="w-3 h-3 flex-shrink-0" />
-                      <span className="truncate">{event.lieu}</span>
-                    </p>
-                    {event.organisateur && (
-                      <p className="text-gray-500 text-xs mt-1">{event.organisateur.structure}</p>
-                    )}
-                    <div className="flex flex-wrap gap-1 md:gap-2 mt-2 md:mt-3">
-                      {event.types_tickets && event.types_tickets.slice(0, 3).map((type) => (
-                        <span key={type.id} className="bg-gray-800 text-gray-300 text-[10px] md:text-xs px-2 py-1 rounded">
-                          {type.nom}: {type.prix?.toLocaleString()} FCFA
-                        </span>
-                      ))}
-                      {event.types_tickets && event.types_tickets.length > 3 && (
-                        <span className="text-gray-500 text-xs">+{event.types_tickets.length - 3}</span>
-                      )}
-                    </div>
-                    <Link
-                      to={`/boutique/${event.id}`}
-                      className="block mt-3 md:mt-4 bg-yellow-400 hover:bg-yellow-300 text-black text-center font-medium py-2 rounded-lg transition-colors text-sm md:text-base"
-                    >
-                      Voir
-                    </Link>
-                  </div>
-                </div>
+                  <p className="text-white text-xs sm:text-sm font-medium mt-2 group-hover:text-yellow-400 transition-colors text-center max-w-[80px] truncate">
+                    {sponsor.nom}
+                  </p>
+                </a>
               ))}
             </div>
           )}
@@ -674,7 +724,6 @@ const Home = () => {
                       {c.commentaire && (
                         <p className="text-gray-300 mt-2 text-sm">{c.commentaire}</p>
                       )}
-                      {/* ✅ CORRECTION : Affichage des réponses */}
                       {c.reponses && c.reponses.length > 0 && (
                         <div className="mt-3 ml-2 bg-gray-800/50 rounded-lg p-3 border-l-2 border-yellow-400">
                           {c.reponses.map((r) => (
@@ -700,7 +749,6 @@ const Home = () => {
                     </div>
                   ))}
                   
-                  {/* Bouton Voir plus */}
                   {commentaires.length > visibleComments && (
                     <div className="text-center pt-2">
                       <button

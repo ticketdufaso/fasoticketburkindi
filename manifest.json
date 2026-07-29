@@ -1,7 +1,7 @@
 {
-  "name": "FasoTicket",
-  "short_name": "FasoTicket",
-  "description": "La meilleure plateforme de billetterie événementielle",
+  "name": "FASO TICKET",
+  "short_name": "FASO TICKET",
+  "description": "Billetterie sécurisée pour événements au Burkina Faso",
   "theme_color": "#000000",
   "background_color": "#000000",
   "display": "standalone",

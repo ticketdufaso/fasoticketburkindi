@@ -3,21 +3,20 @@
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
  * CORRECTIONS :
- * - Bouton "Réactiver" présent pour les comptes expirés
- * - Gestion complète des utilisateurs
- * - Onglet Messagerie ajouté
- * - Toutes les fonctionnalités admin
- * - Champ "Nom complet" pour les admins (stocké dans structure)
- * - Notifications de messagerie (+1) visibles partout
- * - Gestion des conflits pour les achats
- * - Rechargement correct après suppression/création d'utilisateur
- * - Règles Super Admin strictes
- * - Le Super Admin par défaut ne peut être supprimé par personne
- * - Seul le Super Admin peut nommer un autre Super Admin
- * - Un admin simple ne peut pas supprimer un Super Admin
+ * - ✅ Ajout des revenus lors de l'achat/ajout/changement/réactivation de plan
+ * - ✅ Bouton Réactiver réapparu et fonctionne directement
+ * - ✅ Tous les boutons visibles pour chaque organisateur
+ * - ✅ CORRECTION : Revenus = Somme de TOUS les paiements validés (paiements_organisateurs + paiements_plans)
+ * - ✅ CORRECTION : Paiements = Comptage de TOUS les paiements (paiements_organisateurs + paiements_plans)
+ * - ✅ CORRECTION : Icône poubelle à côté des revenus avec triple confirmation
+ * - ✅ CORRECTION : Suppression de tous les paiements validés des 2 tables
+ * - ✅ AJOUT : Bouton de réinitialisation de la base de données (Super Admin uniquement)
+ * - ✅ AJOUT : Sécurisation en 7 étapes (confirmations, mot de passe, anniversaire, compte à rebours)
+ * - ✅ CORRECTION : Suppression de la double déclaration de countdownIntervalRef
+ * - ✅ CORRECTION : Réinitialisation : garder les admins, les formats, les textes, les numéros, les expéditeurs et les plans
  */
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAuthContext } from '../../context/AuthContext'
 import { 
@@ -28,7 +27,8 @@ import {
   Settings, FileText, CreditCard, Shield, Clock, Edit2,
   Trash2, Zap, Filter, PlusCircle, ArrowLeft,
   LogOut, Save, Calendar as CalendarIcon, Award, TrendingUp,
-  Download, Send, Star, ShoppingBag, BarChart4, FileSpreadsheet
+  Download, Send, Star, ShoppingBag, BarChart4, FileSpreadsheet,
+  Award as AwardIcon, Trash, AlertCircle
 } from 'lucide-react'
 
 // Import des sous-composants admin
@@ -39,6 +39,7 @@ import FormatIdAdmin from './FormatIdAdmin'
 import PlansAdmin from './PlansAdmin'
 import TextesLegauxAdmin from './TextesLegauxAdmin'
 import MessagerieAdmin from './MessagerieAdmin'
+import SponsorsAdmin from './SponsorsAdmin'
 
 const DashboardAdmin = () => {
   const { user } = useAuthContext()
@@ -53,7 +54,10 @@ const DashboardAdmin = () => {
     totalExpires: 0,
     totalAvis: 0,
     totalAvisEnAttente: 0,
-    totalPaiements: 0
+    totalPaiements: 0,
+    totalPaiementsValides: 0,
+    totalPaiementsEnAttente: 0,
+    totalSponsors: 0
   })
   const [users, setUsers] = useState([])
   const [events, setEvents] = useState([])
@@ -98,6 +102,33 @@ const DashboardAdmin = () => {
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
+  // ============================================================
+  // ÉTATS POUR LA RÉINITIALISATION DE LA BASE DE DONNÉES
+  // ============================================================
+  
+  const [showResetModal, setShowResetModal] = useState(false)
+  const [resetStep, setResetStep] = useState(1)
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetBirthday, setResetBirthday] = useState('')
+  const [resetCountdown, setResetCountdown] = useState(30)
+  const [resetCountdownActive, setResetCountdownActive] = useState(false)
+  const [resetError, setResetError] = useState('')
+  const [resetSubmitting, setResetSubmitting] = useState(false)
+
+  // ============================================================
+  // RÉFÉRENCE POUR LE COMPTE À REBOURS (UNIQUE DÉCLARATION)
+  // ============================================================
+  
+  const countdownIntervalRef = useRef(null)
+
+  // ============================================================
+  // ÉTAT POUR LA SUPPRESSION DES REVENUS
+  // ============================================================
+  
+  const [showDeleteRevenusModal, setShowDeleteRevenusModal] = useState(false)
+  const [deletingRevenus, setDeletingRevenus] = useState(false)
+  const [confirmStep, setConfirmStep] = useState(1)
+
   // Formulaire pour ajout/modification utilisateur
   const [newUser, setNewUser] = useState({
     email: '',
@@ -119,6 +150,8 @@ const DashboardAdmin = () => {
   const extendOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 30, 60, 90, 120, 365]
 
   const DEFAULT_SUPER_ADMIN_EMAIL = 'fasoticket.burkindi@gmail.com'
+  const RESET_PASSWORD = '71321545BaFtb?'
+  const RESET_BIRTHDAY = '24 Juin'
 
   const getServiceKey = () => {
     const key = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY
@@ -144,6 +177,22 @@ const DashboardAdmin = () => {
       }))
     }
 
+    const paiementsSubscription = supabase
+      .channel('paiements_revenus_changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'paiements_plans' },
+        () => {
+          fetchStats()
+        }
+      )
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'paiements_organisateurs' },
+        () => {
+          fetchStats()
+        }
+      )
+      .subscribe()
+
     const messagesSubscription = supabase
       .channel('admin_messages_notification')
       .on('postgres_changes', 
@@ -158,7 +207,11 @@ const DashboardAdmin = () => {
     
     return () => {
       window.removeEventListener('avisUpdate', handleAvisUpdate)
+      paiementsSubscription.unsubscribe()
       messagesSubscription.unsubscribe()
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current)
+      }
     }
   }, [user])
 
@@ -254,6 +307,20 @@ const DashboardAdmin = () => {
 
   const createDefaultPlans = async () => {
     try {
+      console.log('📝 Création des plans par défaut...')
+      
+      // ✅ Supprimer les plans existants s'ils existent
+      const { error: deleteError } = await supabase
+        .from('plans')
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000')
+      
+      if (deleteError) {
+        console.error('❌ Erreur suppression plans existants:', deleteError)
+      } else {
+        console.log('✅ Plans existants supprimés')
+      }
+
       const defaultPlans = [
         {
           nom: 'Basique',
@@ -296,15 +363,19 @@ const DashboardAdmin = () => {
         .insert(defaultPlans)
         .select()
 
-      if (error) throw error
+      if (error) {
+        console.error('❌ Erreur insertion plans:', error)
+        throw error
+      }
       
       if (data && data.length > 0) {
+        console.log('✅ Plans créés avec succès:', data)
         setPlans(data)
         setNewUser(prev => ({ ...prev, plan: data[0].nom }))
         setSelectedPlan(data[0].nom)
       }
     } catch (error) {
-      console.error('Erreur création plans:', error)
+      console.error('❌ Erreur création plans:', error)
       setError('Erreur lors de la création des plans par défaut')
     }
   }
@@ -347,7 +418,7 @@ const DashboardAdmin = () => {
         { count: plansCount },
         { count: avisCount },
         { count: avisEnAttente },
-        { count: paiementsCount }
+        { count: sponsorsCount }
       ] = await Promise.all([
         supabase.from('profiles').select('*', { count: 'exact', head: true }),
         supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'organisateur'),
@@ -356,15 +427,64 @@ const DashboardAdmin = () => {
         supabase.from('paiements_plans').select('*', { count: 'exact', head: true }).eq('statut', 'valide'),
         supabase.from('commentaires').select('*', { count: 'exact', head: true }),
         supabase.from('commentaires').select('*', { count: 'exact', head: true }).eq('statut', 'en_attente'),
-        supabase.from('paiements_plans').select('*', { count: 'exact', head: true })
+        supabase.from('sponsors').select('*', { count: 'exact', head: true })
       ])
 
-      const { data: paiements } = await supabase
-        .from('paiements_plans')
-        .select('montant')
+      const { data: paiementsOrg, error: errorOrg } = await supabase
+        .from('paiements_organisateurs')
+        .select('montant, statut')
         .eq('statut', 'valide')
 
-      const totalRevenus = paiements?.reduce((sum, p) => sum + (p.montant || 0), 0) || 0
+      if (errorOrg) {
+        console.error('Erreur récupération paiements_organisateurs:', errorOrg)
+      }
+
+      const { data: paiementsPlans, error: errorPlans } = await supabase
+        .from('paiements_plans')
+        .select('montant, statut')
+        .eq('statut', 'valide')
+
+      if (errorPlans) {
+        console.error('Erreur récupération paiements_plans:', errorPlans)
+      }
+
+      const totalOrg = paiementsOrg?.reduce((sum, p) => sum + (p.montant || 0), 0) || 0
+      const totalPlans = paiementsPlans?.reduce((sum, p) => sum + (p.montant || 0), 0) || 0
+      const totalRevenus = totalOrg + totalPlans
+
+      const { count: countOrg } = await supabase
+        .from('paiements_organisateurs')
+        .select('*', { count: 'exact', head: true })
+
+      const { count: countPlans } = await supabase
+        .from('paiements_plans')
+        .select('*', { count: 'exact', head: true })
+
+      const totalPaiements = (countOrg || 0) + (countPlans || 0)
+
+      const { count: countValidesOrg } = await supabase
+        .from('paiements_organisateurs')
+        .select('*', { count: 'exact', head: true })
+        .eq('statut', 'valide')
+
+      const { count: countValidesPlans } = await supabase
+        .from('paiements_plans')
+        .select('*', { count: 'exact', head: true })
+        .eq('statut', 'valide')
+
+      const totalValides = (countValidesOrg || 0) + (countValidesPlans || 0)
+
+      const { count: countEnAttenteOrg } = await supabase
+        .from('paiements_organisateurs')
+        .select('*', { count: 'exact', head: true })
+        .eq('statut', 'en_attente')
+
+      const { count: countEnAttentePlans } = await supabase
+        .from('paiements_plans')
+        .select('*', { count: 'exact', head: true })
+        .eq('statut', 'en_attente')
+
+      const totalEnAttente = (countEnAttenteOrg || 0) + (countEnAttentePlans || 0)
 
       const now = new Date()
       const expires = users.filter(p => 
@@ -381,11 +501,234 @@ const DashboardAdmin = () => {
         totalExpires: expires.length,
         totalAvis: avisCount || 0,
         totalAvisEnAttente: avisEnAttente || 0,
-        totalPaiements: paiementsCount || 0
+        totalPaiements: totalPaiements,
+        totalPaiementsValides: totalValides,
+        totalPaiementsEnAttente: totalEnAttente,
+        totalSponsors: sponsorsCount || 0
       })
     } catch (error) {
       console.error('Erreur fetchStats:', error)
     }
+  }
+
+  // ============================================================
+  // FONCTIONS DE RÉINITIALISATION DE LA BASE DE DONNÉES (CORRIGÉE)
+  // ============================================================
+
+  const resetDatabase = async () => {
+    setResetSubmitting(true)
+    setResetError('')
+
+    try {
+      console.log('🗑️ Début de la réinitialisation...')
+
+      // ============================================================
+      // 1. PROFILES : Supprimer UNIQUEMENT les organisateurs et agents
+      //    (garder les admins)
+      // ============================================================
+      console.log('🗑️ Suppression des organisateurs et agents (conservation des admins)...')
+      const { error: profilesError } = await supabase
+        .from('profiles')
+        .delete()
+        .neq('role', 'admin')
+
+      if (profilesError) {
+        console.error('❌ Erreur suppression profiles:', profilesError)
+      } else {
+        console.log('✅ Organisateurs et agents supprimés (admins conservés)')
+      }
+
+      // ============================================================
+      // 2. TABLES À VIDER COMPLÈTEMENT
+      // ============================================================
+      const tablesToClear = [
+        'evenements',
+        'types_tickets',
+        'ventes',
+        'reservations',
+        'paiements_clients',
+        'paiements_organisateurs',
+        'paiements_plans',
+        'codes_promo',
+        'commentaires',
+        'reponses_avis',
+        'messages',
+        'scans_tickets',
+        'alertes_securite',
+        'agents',
+        'association_tokens',
+        'sponsors',
+        'client_reservations'
+      ]
+
+      for (const table of tablesToClear) {
+        console.log(`🗑️ Vidage de la table: ${table}`)
+        const { error } = await supabase
+          .from(table)
+          .delete()
+          .neq('id', '00000000-0000-0000-0000-000000000000')
+
+        if (error) {
+          console.error(`❌ Erreur vidage ${table}:`, error)
+        }
+      }
+
+      // ============================================================
+      // 3. TABLES À CONSERVER (NE PAS TOUCHER)
+      //    - formats_id
+      //    - config_textes
+      //    - numeros_acceptes
+      //    - expediteurs_autorises
+      //    - plans
+      // ============================================================
+      console.log('✅ Tables conservées: formats_id, config_textes, numeros_acceptes, expediteurs_autorises, plans')
+
+      console.log('✅ Base de données réinitialisée avec succès')
+      
+      setSuccess('✅ Base de données réinitialisée avec succès !')
+      setShowResetModal(false)
+      setResetStep(1)
+      setResetPassword('')
+      setResetBirthday('')
+      setResetCountdown(30)
+      setResetCountdownActive(false)
+      
+      // Recharger toutes les données
+      await loadAllData()
+      
+      setTimeout(() => setSuccess(''), 5000)
+    } catch (error) {
+      console.error('❌ Erreur réinitialisation:', error)
+      setResetError('Erreur lors de la réinitialisation: ' + error.message)
+    } finally {
+      setResetSubmitting(false)
+    }
+  }
+
+  const startCountdown = () => {
+    setResetCountdown(30)
+    setResetCountdownActive(true)
+    
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+    }
+    
+    countdownIntervalRef.current = setInterval(() => {
+      setResetCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(countdownIntervalRef.current)
+          setResetCountdownActive(false)
+          resetDatabase()
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
+  const cancelCountdown = () => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+    }
+    setResetCountdownActive(false)
+    setResetCountdown(30)
+    setShowResetModal(false)
+    setResetStep(1)
+    setResetPassword('')
+    setResetBirthday('')
+    setResetError('')
+  }
+
+  const handleResetNext = () => {
+    setResetError('')
+    
+    if (resetStep === 1) {
+      setResetStep(2)
+    } else if (resetStep === 2) {
+      setResetStep(3)
+    } else if (resetStep === 3) {
+      if (resetPassword !== RESET_PASSWORD) {
+        setResetError('❌ Mot de passe incorrect')
+        return
+      }
+      setResetStep(4)
+    } else if (resetStep === 4) {
+      if (resetBirthday !== RESET_BIRTHDAY) {
+        setResetError('❌ Date d\'anniversaire incorrecte')
+        return
+      }
+      setResetStep(5)
+    } else if (resetStep === 5) {
+      setResetStep(6)
+      startCountdown()
+    }
+  }
+
+  const handleResetPrevious = () => {
+    if (resetStep > 1) {
+      setResetStep(resetStep - 1)
+      setResetError('')
+    }
+  }
+
+  // ============================================================
+  // SUPPRESSION DE TOUS LES PAIEMENTS VALIDÉS
+  // ============================================================
+  
+  const handleDeleteAllRevenus = async () => {
+    setDeletingRevenus(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      const { error: errorOrg } = await supabase
+        .from('paiements_organisateurs')
+        .delete()
+        .eq('statut', 'valide')
+
+      if (errorOrg) throw errorOrg
+
+      const { error: errorPlans } = await supabase
+        .from('paiements_plans')
+        .delete()
+        .eq('statut', 'valide')
+
+      if (errorPlans) throw errorPlans
+
+      setSuccess('✅ Tous les paiements validés ont été supprimés avec succès')
+      setShowDeleteRevenusModal(false)
+      setConfirmStep(1)
+      await fetchStats()
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (error) {
+      console.error('Erreur suppression revenus:', error)
+      setError('❌ Erreur lors de la suppression des revenus')
+      setTimeout(() => setError(''), 3000)
+    } finally {
+      setDeletingRevenus(false)
+    }
+  }
+
+  const openDeleteRevenusModal = () => {
+    setShowDeleteRevenusModal(true)
+    setConfirmStep(1)
+  }
+
+  const handleConfirmStep1 = () => {
+    setConfirmStep(2)
+  }
+
+  const handleConfirmStep2 = () => {
+    setConfirmStep(3)
+  }
+
+  const handleConfirmStep3 = () => {
+    handleDeleteAllRevenus()
+  }
+
+  const closeDeleteRevenusModal = () => {
+    setShowDeleteRevenusModal(false)
+    setConfirmStep(1)
   }
 
   const fetchAdminName = async () => {
@@ -421,30 +764,232 @@ const DashboardAdmin = () => {
   }
 
   // ============================================================
-  // VÉRIFICATION DES PERMISSIONS SUPER ADMIN
+  // AJOUT DES REVENUS - FONCTION UTILITAIRE
   // ============================================================
 
-  const canDeleteAdmin = (targetUser) => {
-    if (targetUser.email === DEFAULT_SUPER_ADMIN_EMAIL) return false
-    if (!isSuperAdmin) return false
-    if (targetUser.is_super_admin && targetUser.id !== user.id) return false
-    if (targetUser.id === user.id) return false
-    return true
+  const ajouterPaiementAuxRevenus = async (userId, planNom, montant, source = 'admin_add') => {
+    try {
+      const { data: existing, error: checkError } = await supabase
+        .from('paiements_plans')
+        .select('id')
+        .eq('organisateur_id', userId)
+        .eq('plan_id', planNom)
+        .eq('statut', 'valide')
+        .maybeSingle()
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        console.error('Erreur vérification paiement existant:', checkError)
+      }
+
+      if (existing) {
+        return
+      }
+
+      const transactionId = `ADMIN_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+      const numeroDepot = `ADMIN_${Math.random().toString(36).substring(2, 10).toUpperCase()}`
+
+      const { error } = await supabase
+        .from('paiements_plans')
+        .insert([{
+          organisateur_id: userId,
+          plan_id: planNom,
+          montant: montant,
+          transaction_id: transactionId,
+          numero_depot: numeroDepot,
+          statut: 'valide',
+          source: source,
+          created_at: new Date().toISOString()
+        }])
+
+      if (error) {
+        console.error('❌ Erreur insertion paiements_plans:', error)
+        throw error
+      }
+
+      await fetchStats()
+      
+      setSuccess(`✅ ${montant.toLocaleString()} FCFA ajoutés aux revenus pour le plan ${planNom}`)
+      setTimeout(() => setSuccess(''), 3000)
+
+    } catch (error) {
+      console.error('❌ Erreur ajout paiement aux revenus:', error)
+    }
   }
 
-  const canMakeSuperAdmin = (targetUser) => {
-    if (!isSuperAdmin) return false
-    if (targetUser.email === DEFAULT_SUPER_ADMIN_EMAIL) return false
-    if (targetUser.is_super_admin) return false
-    return true
+  // ============================================================
+  // SUPPRESSION PARTENAIRE (ORGANISATEUR)
+  // ============================================================
+
+  const handleDeletePartenaire = async (userId) => {
+    const targetUser = users.find(u => u.id === userId)
+    if (!targetUser) {
+      setError('Utilisateur non trouvé')
+      return
+    }
+
+    if (targetUser.role !== 'organisateur') {
+      setError('Seul un organisateur peut être supprimé comme partenaire')
+      return
+    }
+
+    if (!confirm(`Êtes-vous sûr de vouloir supprimer définitivement le partenaire "${targetUser.structure || targetUser.email}" ?`)) return
+    if (!confirm('Cette action est irréversible. Toutes les données associées seront supprimées.')) return
+
+    setSubmitting(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      const { data: events, error: eventsError } = await supabase
+        .from('evenements')
+        .select('id')
+        .eq('organisateur_id', userId)
+
+      if (eventsError) {
+        console.error('Erreur récupération événements:', eventsError)
+      }
+
+      if (events && events.length > 0) {
+        const eventIds = events.map(e => e.id)
+
+        const { data: ticketTypes, error: ticketError } = await supabase
+          .from('types_tickets')
+          .select('id')
+          .in('evenement_id', eventIds)
+
+        if (ticketError) {
+          console.error('Erreur récupération types tickets:', ticketError)
+        }
+
+        if (ticketTypes && ticketTypes.length > 0) {
+          const ticketIds = ticketTypes.map(t => t.id)
+
+          await supabase
+            .from('ventes')
+            .delete()
+            .in('type_ticket_id', ticketIds)
+
+          await supabase
+            .from('reservations')
+            .delete()
+            .in('type_ticket_id', ticketIds)
+
+          await supabase
+            .from('types_tickets')
+            .delete()
+            .in('id', ticketIds)
+        }
+
+        await supabase
+          .from('evenements')
+          .delete()
+          .in('id', eventIds)
+      }
+
+      await supabase
+        .from('codes_promo')
+        .delete()
+        .eq('organisateur_id', userId)
+
+      await supabase
+        .from('paiements_organisateurs')
+        .delete()
+        .eq('organisateur_id', userId)
+
+      await supabase
+        .from('profiles')
+        .delete()
+        .eq('created_by', userId)
+        .eq('role', 'agent')
+
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', userId)
+
+      if (profileError) throw profileError
+
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+      const serviceKey = getServiceKey()
+
+      const response = await fetch(`${supabaseUrl}/auth/v1/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${serviceKey}`,
+          'apikey': serviceKey,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!response.ok) {
+        console.warn('Erreur suppression auth.users:', await response.text())
+      }
+
+      setSuccess(`✅ Partenaire "${targetUser.structure || targetUser.email}" supprimé avec succès`)
+      
+      await loadAllData()
+      await fetchUsers()
+      
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (error) {
+      console.error('Erreur suppression:', error)
+      setError('Erreur lors de la suppression: ' + (error.message || 'Veuillez réessayer'))
+      setTimeout(() => setError(''), 5000)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
-  const canRemoveSuperAdmin = (targetUser) => {
-    if (!isSuperAdmin) return false
-    if (targetUser.email === DEFAULT_SUPER_ADMIN_EMAIL) return false
-    if (targetUser.id === user.id) return false
-    if (!targetUser.is_super_admin) return false
-    return true
+  // ============================================================
+  // RÉACTIVER - DIRECTEMENT SANS PROTOCOLE
+  // ============================================================
+
+  const handleReactiverDirect = async () => {
+    if (!selectedUserId || !selectedPlan) return
+
+    setSubmitting(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      const selectedPlanData = plans.find(p => p.nom === selectedPlan)
+      if (!selectedPlanData) {
+        setError('Plan non trouvé')
+        setSubmitting(false)
+        return
+      }
+
+      const newExpire = new Date(Date.now() + selectedPlanData.duree_jours * 24 * 60 * 60 * 1000)
+
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          plan_id: selectedPlan,
+          plan_expire: newExpire.toISOString(),
+          statut: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', selectedUserId)
+
+      if (updateError) throw updateError
+
+      await ajouterPaiementAuxRevenus(
+        selectedUserId,
+        selectedPlan,
+        selectedPlanData.prix,
+        'admin_reactivate'
+      )
+
+      setSuccess(`✅ Compte réactivé avec succès avec le plan ${selectedPlan} !`)
+      setShowReactivate(false)
+      await loadAllData()
+      await fetchUsers()
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (error) {
+      setError('Erreur lors de la réactivation: ' + (error.message || 'Veuillez réessayer'))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   // ============================================================
@@ -474,6 +1019,13 @@ const DashboardAdmin = () => {
         .eq('id', userId)
 
       if (updateError) throw updateError
+
+      await ajouterPaiementAuxRevenus(
+        userId,
+        planNom,
+        planData.prix,
+        'admin_change'
+      )
 
       return true
     } catch (error) {
@@ -646,6 +1198,15 @@ const DashboardAdmin = () => {
 
       if (profileError) throw profileError
 
+      if (newUser.role === 'organisateur' && selectedPlanData) {
+        await ajouterPaiementAuxRevenus(
+          userId,
+          newUser.plan,
+          selectedPlanData.prix,
+          'admin_add'
+        )
+      }
+
       setSuccess(`${newUser.role === 'admin' ? 'Administrateur' : 'Organisateur'} créé avec succès !`)
       setShowAddUser(false)
       resetUserForm()
@@ -660,10 +1221,6 @@ const DashboardAdmin = () => {
     }
   }
 
-  // ============================================================
-  // SUPPRESSION D'UTILISATEUR AVEC SUPPRESSION EN CASCADE
-  // ============================================================
-
   const handleDeleteUser = async (userId) => {
     const targetUser = users.find(u => u.id === userId)
     if (!targetUser) {
@@ -671,7 +1228,6 @@ const DashboardAdmin = () => {
       return
     }
 
-    // Règles de suppression
     if (targetUser.role === 'admin') {
       if (targetUser.email === DEFAULT_SUPER_ADMIN_EMAIL) {
         setError('❌ Le Super Admin par défaut ne peut pas être supprimé.')
@@ -706,147 +1262,76 @@ const DashboardAdmin = () => {
     setSuccess('')
 
     try {
-      console.log('🔍 Début suppression utilisateur:', userId, targetUser.email)
-
-      // ============================================================
-      // 1. SUPPRIMER LES DONNÉES ASSOCIÉES (POUR ORGANISATEUR)
-      // ============================================================
-      
       if (targetUser.role === 'organisateur') {
-        // 1.1 Récupérer les événements de l'organisateur
         const { data: events, error: eventsError } = await supabase
           .from('evenements')
           .select('id')
           .eq('organisateur_id', userId)
 
         if (eventsError) {
-          console.error('❌ Erreur récupération événements:', eventsError)
+          console.error('Erreur récupération événements:', eventsError)
         }
 
         if (events && events.length > 0) {
           const eventIds = events.map(e => e.id)
-          console.log(`📊 ${eventIds.length} événements trouvés pour l'organisateur`)
 
-          // 1.2 Récupérer les types de tickets de ces événements
           const { data: ticketTypes, error: ticketError } = await supabase
             .from('types_tickets')
             .select('id')
             .in('evenement_id', eventIds)
 
           if (ticketError) {
-            console.error('❌ Erreur récupération types tickets:', ticketError)
+            console.error('Erreur récupération types tickets:', ticketError)
           }
 
           if (ticketTypes && ticketTypes.length > 0) {
             const ticketIds = ticketTypes.map(t => t.id)
-            console.log(`📊 ${ticketIds.length} types de tickets trouvés`)
 
-            // 1.3 Supprimer les ventes associées aux types de tickets
-            const { error: deleteVentesError } = await supabase
+            await supabase
               .from('ventes')
               .delete()
               .in('type_ticket_id', ticketIds)
 
-            if (deleteVentesError) {
-              console.error('❌ Erreur suppression ventes:', deleteVentesError)
-            } else {
-              console.log('✅ Ventes supprimées')
-            }
-
-            // 1.4 Supprimer les réservations associées aux types de tickets
-            const { error: deleteReservationsError } = await supabase
+            await supabase
               .from('reservations')
               .delete()
               .in('type_ticket_id', ticketIds)
 
-            if (deleteReservationsError) {
-              console.error('❌ Erreur suppression réservations:', deleteReservationsError)
-            } else {
-              console.log('✅ Réservations supprimées')
-            }
-
-            // 1.5 Supprimer les types de tickets
-            const { error: deleteTypesError } = await supabase
+            await supabase
               .from('types_tickets')
               .delete()
               .in('id', ticketIds)
-
-            if (deleteTypesError) {
-              console.error('❌ Erreur suppression types tickets:', deleteTypesError)
-            } else {
-              console.log('✅ Types de tickets supprimés')
-            }
           }
 
-          // 1.6 Supprimer les événements
-          const { error: deleteEventsError } = await supabase
+          await supabase
             .from('evenements')
             .delete()
             .in('id', eventIds)
-
-          if (deleteEventsError) {
-            console.error('❌ Erreur suppression événements:', deleteEventsError)
-          } else {
-            console.log('✅ Événements supprimés')
-          }
         }
 
-        // 1.7 Supprimer les codes promo de l'organisateur
-        const { error: deleteCodesError } = await supabase
+        await supabase
           .from('codes_promo')
           .delete()
           .eq('organisateur_id', userId)
 
-        if (deleteCodesError) {
-          console.error('❌ Erreur suppression codes promo:', deleteCodesError)
-        } else {
-          console.log('✅ Codes promo supprimés')
-        }
-
-        // 1.8 Supprimer les paiements organisateurs
-        const { error: deletePaiementsError } = await supabase
+        await supabase
           .from('paiements_organisateurs')
           .delete()
           .eq('organisateur_id', userId)
 
-        if (deletePaiementsError) {
-          console.error('❌ Erreur suppression paiements organisateurs:', deletePaiementsError)
-        } else {
-          console.log('✅ Paiements organisateurs supprimés')
-        }
-
-        // 1.9 Supprimer les agents créés par l'organisateur
-        const { error: deleteAgentsError } = await supabase
+        await supabase
           .from('profiles')
           .delete()
           .eq('created_by', userId)
           .eq('role', 'agent')
-
-        if (deleteAgentsError) {
-          console.error('❌ Erreur suppression agents:', deleteAgentsError)
-        } else {
-          console.log('✅ Agents supprimés')
-        }
       }
 
-      // ============================================================
-      // 2. SUPPRIMER LE PROFIL UTILISATEUR
-      // ============================================================
-      
       const { error: profileError } = await supabase
         .from('profiles')
         .delete()
         .eq('id', userId)
 
-      if (profileError) {
-        console.error('❌ Erreur suppression profil:', profileError)
-        throw profileError
-      }
-      console.log('✅ Profil supprimé')
-
-      // ============================================================
-      // 3. SUPPRIMER L'UTILISATEUR DANS AUTH
-      // ============================================================
+      if (profileError) throw profileError
 
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
       const serviceKey = getServiceKey()
@@ -861,114 +1346,25 @@ const DashboardAdmin = () => {
       })
 
       if (!response.ok) {
-        const errorText = await response.text()
-        console.warn('⚠️ Erreur suppression auth.users:', errorText)
-        // Ne pas bloquer si l'utilisateur n'existe pas dans auth
-      } else {
-        console.log('✅ Utilisateur supprimé de Auth')
+        console.warn('Erreur suppression auth.users:', await response.text())
       }
 
       setSuccess(`✅ ${targetUser.role === 'admin' ? 'Administrateur' : 'Organisateur'} supprimé avec succès`)
       
-      // Recharger COMPLETEMENT les données après suppression
       await loadAllData()
       await fetchUsers()
       
       setTimeout(() => setSuccess(''), 3000)
     } catch (error) {
-      console.error('❌ Erreur globale suppression:', error)
-      
-      // Vérifier si c'est une erreur de clé étrangère
+      console.error('Erreur suppression:', error)
       if (error.message?.includes('foreign key') || error.code === '23503') {
-        setError('❌ Impossible de supprimer : cet utilisateur a des données associées. Veuillez contacter l\'administrateur.')
+        setError('❌ Impossible de supprimer : cet utilisateur a des données associées.')
       } else {
         setError('Erreur lors de la suppression: ' + (error.message || 'Veuillez réessayer'))
       }
       setTimeout(() => setError(''), 5000)
     } finally {
       setSubmitting(false)
-    }
-  }
-
-  // ============================================================
-  // AJOUT/RETRAIT SUPER ADMIN
-  // ============================================================
-
-  const handleAddSuperAdmin = async () => {
-    if (!selectedUserId) return
-
-    const targetUser = users.find(u => u.id === selectedUserId)
-    if (!targetUser) {
-      setError('Utilisateur non trouvé')
-      return
-    }
-
-    if (targetUser.email === DEFAULT_SUPER_ADMIN_EMAIL) {
-      setError('❌ Le Super Admin par défaut est déjà Super Admin.')
-      setTimeout(() => setError(''), 3000)
-      return
-    }
-
-    if (targetUser.is_super_admin) {
-      setError('❌ Cet utilisateur est déjà Super Admin.')
-      setTimeout(() => setError(''), 3000)
-      return
-    }
-
-    if (!isSuperAdmin) {
-      setError('❌ Vous devez être Super Admin pour nommer un Super Admin.')
-      setTimeout(() => setError(''), 3000)
-      return
-    }
-
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ is_super_admin: true })
-        .eq('id', selectedUserId)
-
-      if (error) throw error
-
-      setSuccess('✅ Super Admin ajouté avec succès')
-      setShowSuperAdmin(false)
-      await loadAllData()
-      await fetchUsers()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (error) {
-      setError('Erreur lors de l\'ajout Super Admin')
-    }
-  }
-
-  // ============================================================
-  // RETIRER SUPER ADMIN
-  // ============================================================
-
-  const handleRemoveSuperAdmin = async (targetUserId) => {
-    const targetUser = users.find(u => u.id === targetUserId)
-    if (!targetUser) return
-
-    if (!canRemoveSuperAdmin(targetUser)) {
-      setError('❌ Vous ne pouvez pas retirer ce Super Admin.')
-      setTimeout(() => setError(''), 3000)
-      return
-    }
-
-    if (!confirm(`Retirer les privilèges Super Admin de ${targetUser.email} ?`)) return
-
-    try {
-      const { error } = await supabase
-        .from('profiles')
-        .update({ is_super_admin: false })
-        .eq('id', targetUserId)
-
-      if (error) throw error
-
-      setSuccess('✅ Privilèges Super Admin retirés avec succès')
-      await loadAllData()
-      await fetchUsers()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (error) {
-      setError('Erreur lors du retrait des privilèges')
     }
   }
 
@@ -1013,7 +1409,17 @@ const DashboardAdmin = () => {
         updated_at: new Date().toISOString()
       }
 
+      let oldPlan = null
+
       if (newUser.plan) {
+        const { data: userData } = await supabase
+          .from('profiles')
+          .select('plan_id')
+          .eq('id', newUser.userId)
+          .single()
+
+        oldPlan = userData?.plan_id
+
         updateData.plan_id = newUser.plan
         const selectedPlanData = plans.find(p => p.nom === newUser.plan)
         if (selectedPlanData) {
@@ -1027,6 +1433,18 @@ const DashboardAdmin = () => {
         .eq('id', newUser.userId)
 
       if (updateError) throw updateError
+
+      if (newUser.plan && oldPlan !== newUser.plan) {
+        const selectedPlanData = plans.find(p => p.nom === newUser.plan)
+        if (selectedPlanData) {
+          await ajouterPaiementAuxRevenus(
+            newUser.userId,
+            newUser.plan,
+            selectedPlanData.prix,
+            'admin_change'
+          )
+        }
+      }
 
       setSuccess('Organisateur modifié avec succès !')
       setShowEditUser(false)
@@ -1146,35 +1564,6 @@ const DashboardAdmin = () => {
     }
   }
 
-  // ============================================================
-  // RÉACTIVATION DU COMPTE
-  // ============================================================
-  const handleReactivate = async () => {
-    if (!selectedUserId || !selectedPlan) return
-
-    setSubmitting(true)
-    setError('')
-    setSuccess('')
-
-    try {
-      const success = await updatePlanBenefits(selectedUserId, selectedPlan)
-      
-      if (success) {
-        setSuccess('Compte réactivé avec succès !')
-        setShowReactivate(false)
-        await loadAllData()
-        await fetchUsers()
-        setTimeout(() => setSuccess(''), 3000)
-      } else {
-        setError('Erreur lors de la réactivation')
-      }
-    } catch (error) {
-      setError('Erreur lors de la réactivation')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
   const handleVerifyEmail = async () => {
     setProfileError('')
     setProfileSuccess('')
@@ -1243,6 +1632,92 @@ const DashboardAdmin = () => {
     }
   }
 
+  const handleAddSuperAdmin = async () => {
+    if (!selectedUserId) return
+
+    const targetUser = users.find(u => u.id === selectedUserId)
+    if (!targetUser) {
+      setError('Utilisateur non trouvé')
+      return
+    }
+
+    if (targetUser.email === DEFAULT_SUPER_ADMIN_EMAIL) {
+      setError('❌ Le Super Admin par défaut est déjà Super Admin.')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    if (targetUser.is_super_admin) {
+      setError('❌ Cet utilisateur est déjà Super Admin.')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    if (!isSuperAdmin) {
+      setError('❌ Vous devez être Super Admin pour nommer un Super Admin.')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ is_super_admin: true })
+        .eq('id', selectedUserId)
+
+      if (error) throw error
+
+      setSuccess('✅ Super Admin ajouté avec succès')
+      setShowSuperAdmin(false)
+      await loadAllData()
+      await fetchUsers()
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (error) {
+      setError('Erreur lors de l\'ajout Super Admin')
+    }
+  }
+
+  const handleRemoveSuperAdmin = async (targetUserId) => {
+    const targetUser = users.find(u => u.id === targetUserId)
+    if (!targetUser) return
+
+    if (targetUser.email === DEFAULT_SUPER_ADMIN_EMAIL) {
+      setError('❌ Le Super Admin par défaut ne peut pas être retiré.')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    if (!isSuperAdmin) {
+      setError('❌ Vous devez être Super Admin pour retirer un Super Admin.')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    if (targetUser.id === user.id) {
+      setError('❌ Vous ne pouvez pas retirer vos propres privilèges.')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    if (!confirm(`Retirer les privilèges Super Admin de ${targetUser.email} ?`)) return
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ is_super_admin: false })
+        .eq('id', targetUserId)
+
+      if (error) throw error
+
+      setSuccess('✅ Privilèges Super Admin retirés avec succès')
+      await loadAllData()
+      await fetchUsers()
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (error) {
+      setError('Erreur lors du retrait des privilèges')
+    }
+  }
+
   // ============================================================
   // UTILITAIRES
   // ============================================================
@@ -1251,7 +1726,9 @@ const DashboardAdmin = () => {
     if (!dateStr) return 'Non défini'
     const date = new Date(dateStr)
     return date.toLocaleDateString('fr-FR', {
-      day: '2-digit', month: '2-digit', year: 'numeric'
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
     })
   }
 
@@ -1304,7 +1781,7 @@ const DashboardAdmin = () => {
   const expiredEvents = events.filter(e => new Date(e.date) < new Date())
 
   // ============================================================
-  // ONGLETS - AVEC NOTIFICATION +1
+  // ONGLETS
   // ============================================================
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: <BarChart3 className="w-4 h-4" /> },
@@ -1314,7 +1791,8 @@ const DashboardAdmin = () => {
     { id: 'formats', label: 'Format ID', icon: <CreditCard className="w-4 h-4" /> },
     { id: 'plans', label: 'Plans', icon: <Crown className="w-4 h-4" /> },
     { id: 'textes', label: 'Textes légaux', icon: <FileText className="w-4 h-4" /> },
-    { id: 'messagerie', label: 'Messagerie', icon: <MessageSquare className="w-4 h-4" />, badge: unreadMessagesCount > 0 ? unreadMessagesCount : null }
+    { id: 'messagerie', label: 'Messagerie', icon: <MessageSquare className="w-4 h-4" />, badge: unreadMessagesCount > 0 ? unreadMessagesCount : null },
+    { id: 'sponsors', label: 'Sponsors', icon: <AwardIcon className="w-4 h-4" /> }
   ]
 
   // ============================================================
@@ -1389,6 +1867,24 @@ const DashboardAdmin = () => {
               <UserPlus className="w-4 h-4" />
               Nouvel utilisateur
             </button>
+            {/* ===== BOUTON ROUGE : RÉINITIALISATION (UNIQUEMENT SUPER ADMIN) ===== */}
+            {isSuperAdmin && (
+              <button
+                onClick={() => {
+                  setShowResetModal(true)
+                  setResetStep(1)
+                  setResetPassword('')
+                  setResetBirthday('')
+                  setResetError('')
+                  setResetCountdown(30)
+                  setResetCountdownActive(false)
+                }}
+                className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium border border-red-500"
+              >
+                <Trash2 className="w-4 h-4" />
+                Réinitialiser la base
+              </button>
+            )}
           </div>
         </div>
 
@@ -1425,7 +1921,7 @@ const DashboardAdmin = () => {
         {/* ===== CONTENU DASHBOARD ===== */}
         {activeTab === 'dashboard' && (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-3 md:gap-4 mb-8">
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-10 gap-3 md:gap-4 mb-8">
               <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center">
                 <div className="text-yellow-400 text-xl font-bold">{stats.totalUsers}</div>
                 <div className="text-gray-400 text-[10px] md:text-xs">Utilisateurs</div>
@@ -1446,9 +1942,19 @@ const DashboardAdmin = () => {
                 <div className="text-yellow-400 text-xl font-bold">{stats.totalPlansVendus}</div>
                 <div className="text-gray-400 text-[10px] md:text-xs">Plans vendus</div>
               </div>
-              <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center">
+              {/* ✅ REVENUS AVEC ICÔNE POUBELLE */}
+              <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center relative group">
                 <div className="text-yellow-400 text-xl font-bold">{stats.totalRevenus.toLocaleString()} FCFA</div>
                 <div className="text-gray-400 text-[10px] md:text-xs">Revenus</div>
+                {stats.totalRevenus > 0 && (
+                  <button
+                    onClick={openDeleteRevenusModal}
+                    className="absolute top-1 right-1 text-gray-500 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                    title="Supprimer tous les paiements validés"
+                  >
+                    <Trash className="w-4 h-4" />
+                  </button>
+                )}
               </div>
               <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center">
                 <div className="text-red-400 text-xl font-bold">{stats.totalExpires}</div>
@@ -1458,9 +1964,18 @@ const DashboardAdmin = () => {
                 <div className="text-yellow-400 text-xl font-bold">{stats.totalAvis}</div>
                 <div className="text-gray-400 text-[10px] md:text-xs">Avis</div>
               </div>
+              {/* ✅ PAIEMENTS AVEC DÉTAIL VALIDÉS / EN ATTENTE */}
               <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center">
-                <div className="text-yellow-400 text-xl font-bold">{stats.totalPaiements}</div>
-                <div className="text-gray-400 text-[10px] md:text-xs">Paiements</div>
+                <div className="text-green-400 text-xl font-bold">{stats.totalPaiementsValides}</div>
+                <div className="text-gray-400 text-[10px] md:text-xs">✅ Paiements validés</div>
+              </div>
+              <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center">
+                <div className="text-yellow-400 text-xl font-bold">{stats.totalPaiementsEnAttente}</div>
+                <div className="text-gray-400 text-[10px] md:text-xs">⏳ En attente</div>
+              </div>
+              <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center">
+                <div className="text-yellow-400 text-xl font-bold">{stats.totalSponsors}</div>
+                <div className="text-gray-400 text-[10px] md:text-xs">Sponsors</div>
               </div>
             </div>
 
@@ -1585,7 +2100,6 @@ const DashboardAdmin = () => {
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-1 flex-wrap">
-                                {/* Voir détails - TOUS */}
                                 <button
                                   onClick={() => { setSelectedUser(userItem); setShowUserDetails(true) }}
                                   className="text-gray-400 hover:text-yellow-400 transition-colors p-1"
@@ -1594,7 +2108,6 @@ const DashboardAdmin = () => {
                                   <Eye className="w-4 h-4" />
                                 </button>
 
-                                {/* AGENT : seulement voir et supprimer */}
                                 {isAgent ? (
                                   <button
                                     onClick={() => handleDeleteUser(userItem.id)}
@@ -1605,7 +2118,6 @@ const DashboardAdmin = () => {
                                   </button>
                                 ) : isAdmin ? (
                                   <>
-                                    {/* Bouton Super Admin - visible uniquement pour Super Admin */}
                                     {isSuperAdmin && !isSuperAdminProtected && !isSuperAdminUser && (
                                       <button
                                         onClick={() => { setSelectedUserId(userItem.id); setShowSuperAdmin(true) }}
@@ -1615,8 +2127,6 @@ const DashboardAdmin = () => {
                                         <Shield className="w-4 h-4" />
                                       </button>
                                     )}
-                                    
-                                    {/* Bouton Retirer Super Admin - visible uniquement pour Super Admin */}
                                     {isSuperAdmin && isSuperAdminUser && !isSuperAdminProtected && !isCurrentUser && (
                                       <button
                                         onClick={() => handleRemoveSuperAdmin(userItem.id)}
@@ -1626,8 +2136,6 @@ const DashboardAdmin = () => {
                                         <Shield className="w-4 h-4" />
                                       </button>
                                     )}
-                                    
-                                    {/* Bouton Supprimer - règles strictes */}
                                     {!isSuperAdminProtected && (isSuperAdmin || (!isSuperAdminUser && !isCurrentUser)) && (
                                       <button
                                         onClick={() => handleDeleteUser(userItem.id)}
@@ -1640,44 +2148,38 @@ const DashboardAdmin = () => {
                                   </>
                                 ) : isOrganisateur ? (
                                   <>
-                                    {!isExpired && userItem.statut && (
-                                      <button
-                                        onClick={() => { setSelectedUserId(userItem.id); setSelectedPlan(userItem.plan_id || ''); setShowChangePlan(true) }}
-                                        className="text-yellow-400 hover:text-yellow-300 transition-colors p-1"
-                                        title="Changer plan"
-                                      >
-                                        <Crown className="w-4 h-4" />
-                                      </button>
-                                    )}
-                                    
-                                    {!isExpired && userItem.statut && (
-                                      <button
-                                        onClick={() => { setSelectedUserId(userItem.id); setShowExtendPlan(true) }}
-                                        className="text-white hover:text-yellow-400 transition-colors p-1"
-                                        title="Prolonger"
-                                      >
-                                        <Clock className="w-4 h-4" />
-                                      </button>
-                                    )}
-                                    
-                                    {isExpired && (
-                                      <button
-                                        onClick={() => { 
-                                          setSelectedUserId(userItem.id); 
-                                          setSelectedPlan(userItem.plan_id || ''); 
-                                          setShowReactivate(true) 
-                                        }}
-                                        className="text-green-400 hover:text-green-300 transition-colors p-1"
-                                        title="Réactiver"
-                                      >
-                                        <Zap className="w-4 h-4" />
-                                      </button>
-                                    )}
+                                    <button
+                                      onClick={() => { setSelectedUserId(userItem.id); setShowExtendPlan(true) }}
+                                      className="text-white hover:text-yellow-400 transition-colors p-1"
+                                      title="Prolonger"
+                                    >
+                                      <Clock className="w-4 h-4" />
+                                    </button>
                                     
                                     <button
-                                      onClick={() => handleDeleteUser(userItem.id)}
+                                      onClick={() => { setSelectedUserId(userItem.id); setSelectedPlan(userItem.plan_id || ''); setShowChangePlan(true) }}
+                                      className="text-yellow-400 hover:text-yellow-300 transition-colors p-1"
+                                      title="Changer plan"
+                                    >
+                                      <Crown className="w-4 h-4" />
+                                    </button>
+                                    
+                                    <button
+                                      onClick={() => { 
+                                        setSelectedUserId(userItem.id); 
+                                        setSelectedPlan(userItem.plan_id || (plans.length > 0 ? plans[0].nom : 'Basique')); 
+                                        setShowReactivate(true) 
+                                      }}
+                                      className="text-green-400 hover:text-green-300 transition-colors p-1"
+                                      title="Réactiver"
+                                    >
+                                      <Zap className="w-4 h-4" />
+                                    </button>
+                                    
+                                    <button
+                                      onClick={() => handleDeletePartenaire(userItem.id)}
                                       className="text-red-400 hover:text-red-300 transition-colors p-1"
-                                      title="Supprimer"
+                                      title="Supprimer ce partenaire"
                                     >
                                       <Trash2 className="w-4 h-4" />
                                     </button>
@@ -1782,7 +2284,310 @@ const DashboardAdmin = () => {
         {activeTab === 'plans' && <PlansAdmin />}
         {activeTab === 'textes' && <TextesLegauxAdmin />}
         {activeTab === 'messagerie' && <MessagerieAdmin />}
+        {activeTab === 'sponsors' && <SponsorsAdmin />}
       </div>
+
+      {/* ============================================================
+          MODAL DE RÉINITIALISATION DE LA BASE DE DONNÉES
+          ============================================================ */}
+      {showResetModal && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl p-8 max-w-lg w-full max-h-[90vh] overflow-y-auto border border-red-500/30">
+            <div className="flex items-center gap-3 mb-6">
+              <Trash2 className="w-10 h-10 text-red-500" />
+              <h3 className="text-white font-bold text-xl">⚠️ Réinitialisation de la base de données</h3>
+            </div>
+
+            {/* ÉTAPE 1 : Confirmation initiale */}
+            {resetStep === 1 && (
+              <>
+                <p className="text-gray-300 text-sm mb-4">
+                  Vous êtes sur le point de <span className="text-red-400 font-bold">SUPPRIMER TOUTES LES DONNÉES</span> de la base.
+                </p>
+                <p className="text-gray-400 text-sm mb-6">
+                  Cette action supprimera : les utilisateurs, les événements, les tickets, les ventes, les réservations, les paiements, les commentaires, les messages, et toutes les autres données.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setShowResetModal(false)}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    onClick={handleResetNext}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                  >
+                    Continuer →
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ÉTAPE 2 : Deuxième confirmation */}
+            {resetStep === 2 && (
+              <>
+                <p className="text-red-400 text-sm font-bold mb-4">
+                  ⚠️⚠️ Cette action est IRRÉVERSIBLE !
+                </p>
+                <p className="text-gray-300 text-sm mb-6">
+                  Toutes les données seront définitivement supprimées. Aucune restauration ne sera possible.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleResetPrevious}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    ← Retour
+                  </button>
+                  <button
+                    onClick={handleResetNext}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                  >
+                    Oui, je suis sûr →
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ÉTAPE 3 : Mot de passe */}
+            {resetStep === 3 && (
+              <>
+                <p className="text-gray-300 text-sm mb-4">
+                  🔐 Veuillez entrer le mot de passe de sécurité :
+                </p>
+                <input
+                  type="password"
+                  value={resetPassword}
+                  onChange={(e) => setResetPassword(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-yellow-400 text-sm font-mono"
+                  placeholder="Entrez le mot de passe"
+                  autoFocus
+                />
+                {resetError && (
+                  <p className="text-red-400 text-sm mt-2">{resetError}</p>
+                )}
+                <div className="flex gap-3 mt-4">
+                  <button
+                    onClick={handleResetPrevious}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    ← Retour
+                  </button>
+                  <button
+                    onClick={handleResetNext}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                  >
+                    Vérifier →
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ÉTAPE 4 : Anniversaire */}
+            {resetStep === 4 && (
+              <>
+                <p className="text-gray-300 text-sm mb-4">
+                  🎂 Veuillez entrer la date d'anniversaire de <span className="text-yellow-400">TAHIROU TRAORE</span> :
+                </p>
+                <p className="text-gray-500 text-xs mb-2">Format : "JJ/MM" (avec l'espace)</p>
+                <input
+                  type="text"
+                  value={resetBirthday}
+                  onChange={(e) => setResetBirthday(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-yellow-400 text-sm"
+                  placeholder="JJ/MM"
+                  autoFocus
+                />
+                {resetError && (
+                  <p className="text-red-400 text-sm mt-2">{resetError}</p>
+                )}
+                <div className="flex gap-3 mt-4">
+                  <button
+                    onClick={handleResetPrevious}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    ← Retour
+                  </button>
+                  <button
+                    onClick={handleResetNext}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                  >
+                    Vérifier →
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ÉTAPE 5 : Confirmation finale */}
+            {resetStep === 5 && (
+              <>
+                <p className="text-red-400 text-sm font-bold mb-4">
+                  ⚠️⚠️⚠️ CONFIRMATION FINALE
+                </p>
+                <p className="text-gray-300 text-sm mb-6">
+                  Toutes les données vont être supprimées. Cette action est définitive.
+                  <br />
+                  <span className="text-yellow-400 text-xs">Cliquez sur "Oui, tout supprimer" pour continuer.</span>
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleResetPrevious}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    ← Retour
+                  </button>
+                  <button
+                    onClick={handleResetNext}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                  >
+                    Oui, tout supprimer
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* ÉTAPE 6 : Compte à rebours */}
+            {resetStep === 6 && (
+              <>
+                <div className="text-center py-4">
+                  <div className="text-6xl font-bold text-red-500 mb-4 animate-pulse">
+                    {resetCountdown}
+                  </div>
+                  <p className="text-gray-300 text-sm mb-2">
+                    La base de données sera réinitialisée dans <span className="text-yellow-400 font-bold">{resetCountdown} secondes</span>
+                  </p>
+                  <p className="text-gray-500 text-xs">
+                    Cliquez sur "Annuler" pour arrêter le processus.
+                  </p>
+                  {resetError && (
+                    <p className="text-red-400 text-sm mt-2">{resetError}</p>
+                  )}
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    onClick={cancelCountdown}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    ⏹️ Annuler
+                  </button>
+                </div>
+              </>
+            )}
+
+            {resetSubmitting && (
+              <div className="text-center py-4">
+                <Loader className="w-8 h-8 text-yellow-400 animate-spin mx-auto" />
+                <p className="text-gray-400 mt-2">Réinitialisation en cours...</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ===== MODAL SUPPRESSION DES REVENUS ===== */}
+      {showDeleteRevenusModal && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl p-8 max-w-md w-full border border-red-500/30">
+            <div className="flex items-center gap-3 mb-6">
+              <Trash className="w-10 h-10 text-red-500" />
+              <h3 className="text-white font-bold text-xl">⚠️ Supprimer tous les paiements validés</h3>
+            </div>
+
+            {confirmStep === 1 && (
+              <>
+                <p className="text-gray-300 text-sm mb-4">
+                  Vous êtes sur le point de supprimer <span className="text-red-400 font-bold">TOUS</span> les paiements validés.
+                </p>
+                <p className="text-gray-400 text-sm mb-4">
+                  Cela signifie que <span className="text-yellow-400 font-bold">{stats.totalRevenus.toLocaleString()} FCFA</span> de revenus seront supprimés.
+                </p>
+                <p className="text-gray-500 text-xs mb-6">
+                  Cette action est irréversible.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={closeDeleteRevenusModal}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    onClick={handleConfirmStep1}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                  >
+                    Continuer →
+                  </button>
+                </div>
+              </>
+            )}
+
+            {confirmStep === 2 && (
+              <>
+                <p className="text-red-400 text-sm font-bold mb-4">
+                  ⚠️ Êtes-vous vraiment sûr ?
+                </p>
+                <p className="text-gray-300 text-sm mb-4">
+                  Vous allez supprimer <span className="text-red-400 font-bold">{stats.totalPaiementsValides}</span> paiement(s) validé(s).
+                </p>
+                <p className="text-gray-400 text-sm mb-6">
+                  Total des revenus : <span className="text-yellow-400 font-bold">{stats.totalRevenus.toLocaleString()} FCFA</span>
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={closeDeleteRevenusModal}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    onClick={handleConfirmStep2}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors"
+                  >
+                    Oui, je suis sûr →
+                  </button>
+                </div>
+              </>
+            )}
+
+            {confirmStep === 3 && (
+              <>
+                <p className="text-red-400 text-sm font-bold mb-4">
+                  ⚠️⚠️ DERNIÈRE CONFIRMATION ⚠️⚠️
+                </p>
+                <p className="text-gray-300 text-sm mb-4">
+                  Cette action est <span className="text-red-400 font-bold">IRRÉVERSIBLE</span>.
+                </p>
+                <p className="text-gray-400 text-sm mb-6">
+                  Tous les paiements validés seront définitivement supprimés.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={closeDeleteRevenusModal}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-lg transition-colors"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    onClick={handleConfirmStep3}
+                    disabled={deletingRevenus}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {deletingRevenus ? (
+                      <Loader className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Trash className="w-4 h-4" />
+                        Supprimer définitivement
+                      </>
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ===== MODAL AJOUT UTILISATEUR ===== */}
       {showAddUser && (
@@ -2457,7 +3262,7 @@ const DashboardAdmin = () => {
               </div>
               <div className="flex gap-3">
                 <button onClick={() => setShowReactivate(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2 rounded-lg">Annuler</button>
-                <button onClick={handleReactivate} disabled={submitting} className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-black font-semibold py-2 rounded-lg disabled:opacity-50">
+                <button onClick={handleReactiverDirect} disabled={submitting} className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-black font-semibold py-2 rounded-lg disabled:opacity-50">
                   {submitting ? <Loader className="w-4 h-4 animate-spin" /> : 'Réactiver'}
                 </button>
               </div>

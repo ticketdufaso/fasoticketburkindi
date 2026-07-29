@@ -1,6 +1,13 @@
 /**
  * Ticket Généré - Version horizontale avec affiche en fond
  * Règles NASA 1-10
+ * CORRECTIONS FINALES V10 :
+ * - ✅ Utilisation de RPC marquer_telechargement pour contourner RLS
+ * - ✅ est_telecharger mis à jour correctement en base
+ * - ✅ Vérification de est_scanner avant téléchargement
+ * - ✅ Tous les textes en BLANC ou JAUNE en GRAS
+ * - ✅ Suppression des affichages pour l'organisateur
+ * - ✅ PNG avec fond TRANSPARENT
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -22,6 +29,7 @@ const TicketGenere = () => {
   const navigate = useNavigate();
   const ticketRef = useRef(null);
   
+  // États
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState('');
@@ -30,11 +38,13 @@ const TicketGenere = () => {
   const [evenement, setEvenement] = useState(null);
   const [typeTicket, setTypeTicket] = useState(null);
   const [organisateur, setOrganisateur] = useState(null);
-  const [estTelecharge, setEstTelecharge] = useState(false);
   const [estScanne, setEstScanne] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const [autoDownloadTriggered, setAutoDownloadTriggered] = useState(false);
   const [userRole, setUserRole] = useState(null);
+  const [estTelecharger, setEstTelecharger] = useState(false);
+  const [isOrganisateurView, setIsOrganisateurView] = useState(false);
+  const [isDownloadingFromWhatsApp, setIsDownloadingFromWhatsApp] = useState(false);
+  const [isClient, setIsClient] = useState(false);
 
   const getSiteUrl = () => window.location.origin;
 
@@ -76,15 +86,42 @@ const TicketGenere = () => {
     }
   };
 
-  const handleDownload = async (force = false) => {
-    if (estTelecharge && !force) {
-      setError('⚠️ Ce ticket a déjà été téléchargé.');
+  // ============================================================
+  // VÉRIFIER SI LE TÉLÉCHARGEMENT VIENT DE WHATSAPP (?download=true)
+  // ============================================================
+  
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const downloadParam = params.get('download');
+    
+    if (downloadParam === 'true') {
+      console.log('📥 Téléchargement depuis WhatsApp détecté');
+      setIsDownloadingFromWhatsApp(true);
+    }
+  }, [location]);
+
+  // ============================================================
+  // TÉLÉCHARGEMENT - AVEC RPC marquer_telechargement
+  // ============================================================
+
+  const handleDownload = async () => {
+    // ✅ L'organisateur ne peut PAS télécharger
+    if (userRole === 'organisateur') {
+      setError('⚠️ Les organisateurs ne peuvent pas télécharger les tickets.');
       setTimeout(() => setError(''), 3000);
       return;
     }
 
+    // ✅ L'admin ne peut PAS télécharger
+    if (userRole === 'admin') {
+      setError('⚠️ Les administrateurs ne peuvent pas télécharger les tickets.');
+      setTimeout(() => setError(''), 3000);
+      return;
+    }
+
+    // ✅ Vérifier si déjà scanné
     if (estScanne) {
-      setError('⚠️ Ce ticket a déjà été scanné.');
+      setError('⚠️ Ce ticket a déjà été scanné et n\'est plus valide.');
       setTimeout(() => setError(''), 3000);
       return;
     }
@@ -99,21 +136,15 @@ const TicketGenere = () => {
     setError('');
 
     try {
-      if (!force) {
-        await supabase
-          .from('ventes')
-          .update({
-            est_telecharger: true,
-            date_telechargement: new Date().toISOString()
-          })
-          .eq('id', id);
-        setEstTelecharge(true);
-      }
-
+      console.log('📥 Début du téléchargement du ticket:', id);
+      
+      // ============================================================
+      // ✅ 1. CAPTURE AVEC FOND TRANSPARENT
+      // ============================================================
       const canvas = await html2canvas(ticketRef.current, {
         scale: 2.5,
         useCORS: true,
-        backgroundColor: '#000000',
+        backgroundColor: null,
         logging: false,
         allowTaint: true,
         useClone: true,
@@ -121,6 +152,7 @@ const TicketGenere = () => {
         height: 530
       });
       
+      // 2. Télécharger le fichier
       const link = document.createElement('a');
       link.download = `ticket-${id}.png`;
       link.href = canvas.toDataURL('image/png');
@@ -128,26 +160,79 @@ const TicketGenere = () => {
       link.click();
       document.body.removeChild(link);
 
-      setSuccess('✅ Ticket téléchargé avec succès !');
-      setTimeout(() => setSuccess(''), 3000);
+      console.log('✅ Fichier téléchargé avec succès (fond transparent)');
+
+      // ============================================================
+      // ✅ 3. APPEL RPC POUR MARQUER LE TÉLÉCHARGEMENT (contourne RLS)
+      // ============================================================
+      
+      console.log('📝 Appel RPC marquer_telechargement pour le ticket:', id);
+      
+      // Récupérer le numéro WhatsApp du client depuis le ticket
+      const whatsapp = ticketData?.client_whatsapp;
+      
+      if (!whatsapp) {
+        console.warn('⚠️ Numéro WhatsApp non trouvé, impossible de marquer le téléchargement');
+        setError('⚠️ Le téléchargement a réussi mais le statut n\'a pas été enregistré.');
+        setTimeout(() => setError(''), 3000);
+        setDownloading(false);
+        return;
+      }
+      
+      const { data: result, error: rpcError } = await supabase.rpc('marquer_telechargement', {
+        p_ticket_id: id,
+        p_whatsapp: whatsapp
+      });
+      
+      if (rpcError) {
+        console.error('❌ Erreur RPC marquer_telechargement:', rpcError);
+        setError('⚠️ Le téléchargement a réussi mais le statut n\'a pas été enregistré.');
+        setTimeout(() => setError(''), 3000);
+      } else if (result && result.success) {
+        console.log('✅ RPC marquer_telechargement réussie:', result);
+        setEstTelecharger(true);
+        setSuccess('✅ Ticket téléchargé avec succès !');
+        setTimeout(() => setSuccess(''), 3000);
+      } else {
+        console.warn('⚠️ RPC marquer_telechargement a échoué:', result);
+        setError('⚠️ Le téléchargement a réussi mais le statut n\'a pas été enregistré.');
+        setTimeout(() => setError(''), 3000);
+      }
 
     } catch (error) {
-      setError('❌ Erreur lors du téléchargement');
+      console.error('❌ Erreur téléchargement:', error);
+      setError('❌ Erreur lors du téléchargement: ' + (error.message || 'Veuillez réessayer'));
       setTimeout(() => setError(''), 3000);
     } finally {
       setDownloading(false);
+      setIsDownloadingFromWhatsApp(false);
     }
   };
 
-  const handleForceDownload = async () => {
-    await handleDownload(true);
-  };
+  // ============================================================
+  // TÉLÉCHARGEMENT AUTOMATIQUE DEPUIS WHATSAPP
+  // ============================================================
+
+  useEffect(() => {
+    if (isDownloadingFromWhatsApp && !loading && !estScanne && userRole === 'client') {
+      console.log('📥 Téléchargement automatique depuis WhatsApp déclenché');
+      setTimeout(() => {
+        handleDownload();
+      }, 1500);
+    }
+  }, [isDownloadingFromWhatsApp, loading, estScanne, userRole]);
+
+  // ============================================================
+  // CHARGEMENT DES DONNÉES
+  // ============================================================
 
   useEffect(() => {
     const fetchTicketData = async () => {
       try {
         setLoading(true);
         setError('');
+
+        console.log('🔍 Chargement du ticket:', id);
 
         const { data: vente, error: venteError } = await supabase
           .from('ventes')
@@ -156,14 +241,19 @@ const TicketGenere = () => {
           .single();
 
         if (venteError || !vente) {
+          console.error('❌ Ticket non trouvé:', venteError);
           setError('Ticket non trouvé');
           setLoading(false);
           return;
         }
 
+        console.log('📦 Données du ticket:', vente);
+        console.log('📊 est_telecharger actuel:', vente.est_telecharger);
+        console.log('📊 est_scanner actuel:', vente.est_scanner);
+
         setTicketData(vente);
-        setEstTelecharge(vente.est_telecharger || false);
         setEstScanne(vente.est_scanner || false);
+        setEstTelecharger(vente.est_telecharger || false);
 
         if (vente.evenement_id) {
           const { data: event, error: eventError } = await supabase
@@ -196,26 +286,31 @@ const TicketGenere = () => {
         if (session) {
           const { data: profile } = await supabase
             .from('profiles')
-            .select('role, plan_id')
+            .select('role')
             .eq('id', session.user.id)
             .single();
           
           if (profile) {
             setUserRole(profile.role);
+            console.log('👤 Rôle utilisateur:', profile.role);
+            
+            if (profile.role === 'organisateur') {
+              setIsOrganisateurView(true);
+            }
           }
+        } else {
+          setUserRole('client');
+          setIsClient(true);
+          console.log('👤 Utilisateur non connecté (client)');
         }
 
         const params = new URLSearchParams(location.search);
-        const downloadParam = params.get('download');
-        
-        if (downloadParam === 'true' && !autoDownloadTriggered) {
-          setAutoDownloadTriggered(true);
-          setTimeout(() => {
-            handleDownload(true);
-          }, 1500);
+        if (params.get('download') === 'true') {
+          setIsDownloadingFromWhatsApp(true);
         }
 
-      } catch {
+      } catch (error) {
+        console.error('❌ Erreur chargement:', error);
         setError('Erreur lors du chargement du ticket');
       } finally {
         setLoading(false);
@@ -227,24 +322,41 @@ const TicketGenere = () => {
     }
   }, [id, location.search]);
 
+  // ============================================================
+  // VÉRIFICATION : ADMIN BLOQUÉ
+  // ============================================================
+
+  if (!loading && userRole === 'admin') {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center px-4">
+        <div className="bg-gray-900 rounded-2xl p-8 max-w-md w-full border border-red-500/30 text-center">
+          <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
+          <h2 className="text-2xl font-bold text-white mb-2">⛔ Accès refusé</h2>
+          <p className="text-gray-400">Les administrateurs n'ont pas accès aux tickets.</p>
+          <button
+            onClick={() => navigate('/')}
+            className="mt-6 bg-yellow-400 hover:bg-yellow-300 text-black font-semibold px-6 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 mx-auto"
+          >
+            <Home className="w-4 h-4" />
+            Retour à l'accueil
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const getStatusInfo = () => {
     if (estScanne) {
       return { text: 'SCANNÉ', color: 'text-red-400', bgColor: 'bg-red-500/20', borderColor: 'border-red-500/30' };
     }
-    if (estTelecharge) {
+    if (estTelecharger && userRole === 'client') {
       return { text: 'TÉLÉCHARGÉ', color: 'text-yellow-400', bgColor: 'bg-yellow-500/20', borderColor: 'border-yellow-500/30' };
     }
-    return { text: 'VALIDE', color: 'text-green-400', bgColor: 'bg-green-500/20', borderColor: 'border-green-500/30' };
+    return { text: 'VALIDE', color: 'text-yellow-400', bgColor: 'bg-yellow-500/20', borderColor: 'border-yellow-500/30' };
   };
 
   const status = getStatusInfo();
   const qrValue = `${getSiteUrl()}/verify/${id}`;
-
-  const canRedownload = () => {
-    if (userRole === 'admin') return true;
-    if (userRole === 'organisateur' && organisateur?.plan_id === 'Premium') return true;
-    return false;
-  };
 
   if (loading) {
     return (
@@ -276,13 +388,19 @@ const TicketGenere = () => {
     );
   }
 
+  // Si le ticket est scanné, afficher un message
   if (estScanne) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center px-4">
         <div className="bg-gray-900 rounded-2xl p-8 max-w-md w-full border border-red-500/30 text-center">
           <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-white mb-2">Ticket déjà scanné</h2>
-          <p className="text-gray-400">Ce ticket a déjà été utilisé.</p>
+          <p className="text-gray-400">Ce ticket a déjà été utilisé et n'est plus valide.</p>
+          {ticketData?.date_scannage && (
+            <p className="text-gray-500 text-xs mt-2">
+              Scanné le : {formatDateTime(ticketData.date_scannage)}
+            </p>
+          )}
           <button
             onClick={() => navigate('/')}
             className="mt-6 bg-yellow-400 hover:bg-yellow-300 text-black font-semibold px-6 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 mx-auto"
@@ -294,6 +412,12 @@ const TicketGenere = () => {
       </div>
     );
   }
+
+  const isButtonDisabled = 
+    downloading || 
+    estScanne || 
+    userRole === 'organisateur' ||
+    userRole === 'admin';
 
   return (
     <div className="min-h-screen bg-black py-4 md:py-8 px-4">
@@ -309,7 +433,7 @@ const TicketGenere = () => {
           </button>
           <div className="text-center">
             <h1 className="text-xl font-bold text-white">
-              Votre <span className="text-yellow-400">Ticket</span>
+              {isOrganisateurView ? 'Ticket' : 'Votre Ticket'}
             </h1>
             <p className="text-gray-500 text-xs">{typeTicket?.nom || 'Ticket'}</p>
           </div>
@@ -329,6 +453,7 @@ const TicketGenere = () => {
           </div>
         )}
 
+        {/* ===== TICKET ===== */}
         <div 
           ref={ticketRef}
           className="relative rounded-xl overflow-hidden shadow-2xl w-full"
@@ -337,26 +462,30 @@ const TicketGenere = () => {
             marginLeft: 'auto', 
             marginRight: 'auto',
             aspectRatio: '16/9',
-            minHeight: '280px'
+            minHeight: '280px',
+            borderRadius: '16px'
           }}
         >
+          {/* Fond : affiche de l'événement floutée */}
           <div 
             className="absolute inset-0 bg-cover bg-center"
             style={{ 
               backgroundImage: evenement?.affiche_url ? `url(${evenement.affiche_url})` : 'none',
-              filter: 'blur(6px) brightness(0.25)',
+              filter: 'blur(8px) brightness(0.3)',
               transform: 'scale(1.05)'
             }}
           />
           
+          {/* Overlay noir semi-transparent */}
           <div className="absolute inset-0 bg-black/50" />
           
           <div className="relative z-10 p-3 md:p-4 h-full flex flex-col">
             
+            {/* ===== EN-TÊTE ===== */}
             <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <div 
-                  className="px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1"
+                  className="px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1 text-white"
                   style={{ 
                     backgroundColor: typeTicket?.couleur || '#FFD700', 
                     color: '#000' 
@@ -365,10 +494,10 @@ const TicketGenere = () => {
                   {getIconeForCategorie(typeTicket?.categorie)}
                   <span>{typeTicket?.nom || 'TICKET'}</span>
                 </div>
-                {canRedownload() && (
-                  <span className="px-2 py-0.5 rounded-full text-[8px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                    Admin/Pro
-                  </span>
+                {estTelecharger && userRole === 'client' && (
+                  <div className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-yellow-500/30 text-yellow-400 border border-yellow-500/30">
+                    TÉLÉCHARGÉ
+                  </div>
                 )}
               </div>
               <div className={`px-2.5 py-0.5 rounded-full text-[9px] font-bold ${status.bgColor} ${status.color} border ${status.borderColor}`}>
@@ -376,18 +505,20 @@ const TicketGenere = () => {
               </div>
             </div>
 
+            {/* ===== CORPS ===== */}
             <div className="flex flex-1 gap-3 min-h-0">
               
+              {/* PARTIE GAUCHE */}
               <div className="w-3/5 flex flex-col bg-black/40 backdrop-blur-sm rounded-xl p-3 border border-white/10">
-                <h2 className="text-white font-bold text-sm md:text-base lg:text-lg">
+                <h2 className="text-yellow-400 font-bold text-sm md:text-base lg:text-lg drop-shadow-lg">
                   {evenement?.nom || 'Événement'}
                 </h2>
                 
-                <div className="space-y-1 mt-1 text-gray-200 text-xs md:text-sm">
+                <div className="space-y-1 mt-1 text-white font-bold text-xs md:text-sm drop-shadow-lg">
                   {evenement?.date && (
                     <div className="flex items-center gap-1.5">
                       <span className="text-yellow-400 text-sm">📅</span>
-                      <span className="text-white font-medium text-xs md:text-sm">
+                      <span className="text-white font-bold text-xs md:text-sm">
                         {formatDate(evenement.date)} à {formatTime(evenement.date)}
                       </span>
                     </div>
@@ -395,28 +526,29 @@ const TicketGenere = () => {
                   {evenement?.lieu && (
                     <div className="flex items-center gap-1.5">
                       <MapPin className="h-3.5 w-3.5 text-yellow-400 flex-shrink-0" />
-                      <span className="text-white font-medium text-xs md:text-sm">
+                      <span className="text-white font-bold text-xs md:text-sm">
                         {evenement.lieu}
                       </span>
                     </div>
                   )}
                   {evenement?.infos_lieu && (
-                    <div className="text-yellow-400 text-[10px] md:text-xs font-medium mt-0.5">
+                    <div className="text-yellow-400 text-[10px] md:text-xs font-bold mt-0.5 drop-shadow-lg">
                       ℹ️ {evenement.infos_lieu}
                     </div>
                   )}
                 </div>
 
+                {/* QR CODE */}
                 <div className="mt-auto pt-2 flex items-center justify-between border-t border-white/10">
                   <div className="flex-1 min-w-0">
-                    <p className="text-yellow-400 text-[8px] flex items-center gap-1">
+                    <p className="text-yellow-400 font-bold text-[8px] flex items-center gap-1 drop-shadow-lg">
                       <CreditCard className="h-2.5 w-2.5" /> QR CODE
                     </p>
-                    <p className="text-white/60 text-[8px] font-mono break-all">
+                    <p className="text-white font-bold text-[8px] font-mono break-all drop-shadow-lg">
                       {id}
                     </p>
                   </div>
-                  <div className="bg-white p-2 rounded-xl flex-shrink-0 ml-3">
+                  <div className="bg-white p-2 rounded-xl flex-shrink-0 ml-3 shadow-lg">
                     <QRCodeSVG 
                       value={qrValue}
                       size={90}
@@ -429,7 +561,9 @@ const TicketGenere = () => {
                 </div>
               </div>
 
+              {/* PARTIE DROITE */}
               <div className="w-2/5 flex flex-col gap-2">
+                {/* Image du ticket */}
                 <div className="flex-1 bg-black/40 backdrop-blur-sm rounded-xl p-2 border border-white/10 flex items-center justify-center min-h-[80px]">
                   {typeTicket?.image_url && !imageError ? (
                     <img 
@@ -439,43 +573,44 @@ const TicketGenere = () => {
                       onError={() => setImageError(true)}
                     />
                   ) : (
-                    <div className="flex flex-col items-center justify-center text-white/40">
-                      <Ticket className="h-8 w-8" />
-                      <span className="text-[8px] mt-1">Image du ticket</span>
+                    <div className="flex flex-col items-center justify-center text-white/60">
+                      <Ticket className="h-8 w-8 text-yellow-400" />
+                      <span className="text-[8px] text-white font-bold mt-1">Image du ticket</span>
                     </div>
                   )}
                 </div>
 
+                {/* Infos acheteur */}
                 <div className="bg-black/40 backdrop-blur-sm rounded-xl p-2 border border-white/10">
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                     {ticketData?.client_nom && (
                       <div className="col-span-2">
-                        <p className="text-yellow-400 text-[8px]">ACHETEUR</p>
-                        <p className="text-white text-xs font-medium break-words">
+                        <p className="text-yellow-400 font-bold text-[8px] drop-shadow-lg">ACHETEUR</p>
+                        <p className="text-white font-bold text-xs break-words drop-shadow-lg">
                           {ticketData.client_nom}
                         </p>
                       </div>
                     )}
                     {ticketData?.client_whatsapp && (
                       <div>
-                        <p className="text-yellow-400 text-[8px]">WHATSAPP</p>
-                        <p className="text-gray-300 text-[10px]">
+                        <p className="text-yellow-400 font-bold text-[8px] drop-shadow-lg">WHATSAPP</p>
+                        <p className="text-white font-bold text-[10px] drop-shadow-lg">
                           {ticketData.client_whatsapp}
                         </p>
                       </div>
                     )}
                     {ticketData?.montant && (
                       <div className="text-right">
-                        <p className="text-yellow-400 text-[8px]">MONTANT</p>
-                        <p className="text-yellow-400 font-bold text-xs">
+                        <p className="text-yellow-400 font-bold text-[8px] drop-shadow-lg">MONTANT</p>
+                        <p className="text-yellow-400 font-bold text-xs drop-shadow-lg">
                           {ticketData.montant.toLocaleString()} FCFA
                         </p>
                       </div>
                     )}
                     {ticketData?.created_at && (
                       <div className="col-span-2">
-                        <p className="text-yellow-400 text-[8px]">DATE D'ACHAT</p>
-                        <p className="text-gray-300 text-[10px]">
+                        <p className="text-yellow-400 font-bold text-[8px] drop-shadow-lg">DATE D'ACHAT</p>
+                        <p className="text-white font-bold text-[10px] drop-shadow-lg">
                           {formatDateTime(ticketData.created_at)}
                         </p>
                       </div>
@@ -485,24 +620,26 @@ const TicketGenere = () => {
               </div>
             </div>
 
+            {/* Footer */}
             <div className="mt-1.5 pt-1 border-t border-white/10 text-center">
-              <p className="text-yellow-400 text-[10px] md:text-xs font-medium">
+              <p className="text-yellow-400 font-bold text-[10px] md:text-xs drop-shadow-lg">
                 FASO TICKET - Billetterie sécurisée
               </p>
-              <p className="text-white/30 text-[7px]">
+              <p className="text-white/70 font-bold text-[7px] drop-shadow-lg">
                 Présentez ce ticket à l'entrée
               </p>
             </div>
           </div>
         </div>
 
+        {/* ===== BOUTON TÉLÉCHARGEMENT - UNIQUEMENT POUR LE CLIENT ===== */}
         <div className="mt-4 flex flex-col sm:flex-row gap-2 justify-center">
-          {!canRedownload() && (
+          {userRole === 'client' ? (
             <button
               onClick={handleDownload}
-              disabled={downloading || estTelecharge || estScanne}
+              disabled={isButtonDisabled || downloading}
               className={`flex items-center justify-center gap-2 px-5 py-2 rounded-lg font-semibold transition-all text-sm ${
-                estTelecharge || estScanne
+                isButtonDisabled || downloading
                   ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
                   : 'bg-yellow-400 hover:bg-yellow-300 text-black'
               }`}
@@ -511,11 +648,6 @@ const TicketGenere = () => {
                 <>
                   <Loader className="w-4 h-4 animate-spin" />
                   Téléchargement...
-                </>
-              ) : estTelecharge ? (
-                <>
-                  <CheckCircle className="w-4 h-4" />
-                  Déjà téléchargé
                 </>
               ) : estScanne ? (
                 <>
@@ -529,54 +661,14 @@ const TicketGenere = () => {
                 </>
               )}
             </button>
-          )}
-
-          {canRedownload() && (
-            <button
-              onClick={handleForceDownload}
-              disabled={downloading || estScanne}
-              className={`flex items-center justify-center gap-2 px-5 py-2 rounded-lg font-semibold transition-all text-sm ${
-                estScanne
-                  ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                  : 'bg-yellow-400 hover:bg-yellow-300 text-black'
-              }`}
-            >
-              {downloading ? (
-                <>
-                  <Loader className="w-4 h-4 animate-spin" />
-                  Téléchargement...
-                </>
-              ) : estScanne ? (
-                <>
-                  <AlertCircle className="w-4 h-4" />
-                  Ticket scanné
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  {estTelecharge ? 'Retélécharger' : 'Télécharger le ticket'}
-                </>
-              )}
-            </button>
-          )}
-
-          <button
-            onClick={() => navigate('/')}
-            className="flex items-center justify-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-5 py-2 rounded-lg transition-colors text-sm"
-          >
-            <Home className="w-4 h-4" />
-            Accueil
-          </button>
+          ) : isOrganisateurView ? (
+            null
+          ) : null}
         </div>
 
-        {estTelecharge && !canRedownload() && (
-          <p className="text-gray-500 text-xs text-center mt-3">
-            ⚠️ Ce ticket a déjà été téléchargé. Contactez l'organisateur si vous l'avez perdu.
-          </p>
-        )}
-        {estTelecharge && canRedownload() && (
-          <p className="text-blue-400 text-xs text-center mt-3">
-            🔄 Téléchargement autorisé (Administrateur / Organisateur Premium)
+        {userRole === 'client' && estScanne && (
+          <p className="text-red-400 text-xs text-center mt-3">
+            ⚠️ Ce ticket a déjà été scanné et n'est plus valide.
           </p>
         )}
       </div>

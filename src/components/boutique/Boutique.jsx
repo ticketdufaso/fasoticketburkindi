@@ -1,18 +1,23 @@
 /**
  * Page Boutique
  * Règles NASA 1, 4, 5, 6, 7
+ * CORRECTIONS :
+ * - Vérification du stock total pour chaque événement
+ * - Bouton "Voir" grisé si stock total = 0
+ * - Affichage du statut "Complet" ou "Épuisé" sur la carte
  */
 
 import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
-import { ShoppingBag, Search, Filter, MapPin, Clock, Ticket } from 'lucide-react'
+import { ShoppingBag, Search, Filter, MapPin, Clock, Ticket, AlertCircle } from 'lucide-react'
 
 const Boutique = () => {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [filter, setFilter] = useState('')
+  const [stockData, setStockData] = useState({})
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -29,6 +34,15 @@ const Boutique = () => {
           .order('date', { ascending: true })
 
         if (error) throw error
+        
+        // Calculer le stock total pour chaque événement
+        const stockMap = {}
+        data.forEach(event => {
+          const totalStock = event.types_tickets?.reduce((sum, t) => sum + (t.stock || 0), 0) || 0
+          stockMap[event.id] = totalStock
+        })
+        setStockData(stockMap)
+        
         setEvents(data || [])
       } catch (error) {
         console.error('Erreur:', error)
@@ -50,6 +64,14 @@ const Boutique = () => {
       hour: '2-digit',
       minute: '2-digit'
     })
+  }
+
+  const getTotalStock = (eventId) => {
+    return stockData[eventId] || 0
+  }
+
+  const isEventAvailable = (eventId) => {
+    return getTotalStock(eventId) > 0
   }
 
   const filteredEvents = events.filter(event => {
@@ -111,54 +133,78 @@ const Boutique = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
-            {filteredEvents.map((event) => (
-              <div key={event.id} className="bg-gray-900 rounded-xl overflow-hidden hover:transform hover:scale-[1.02] transition-all duration-300 border border-gray-800">
-                <div className="relative">
-                  <img
-                    src={event.affiche_url || '/images/default-event.jpg'}
-                    alt={event.nom}
-                    className="w-full h-48 object-cover"
-                    loading="lazy"
-                    onError={(e) => e.target.src = '/images/default-event.jpg'}
-                  />
-                  {event.types_tickets && event.types_tickets.length > 0 && (
-                    <div className="absolute top-2 right-2 bg-yellow-400 text-black text-xs font-bold px-3 py-1 rounded-full">
-                      {event.types_tickets.reduce((sum, t) => sum + (t.stock || 0), 0)} places
-                    </div>
-                  )}
-                </div>
-                <div className="p-4">
-                  <h3 className="text-white font-semibold text-base md:text-lg truncate">{event.nom}</h3>
-                  <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
-                    <Clock className="w-3 h-3" />
-                    {formatDate(event.date)}
-                  </p>
-                  <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
-                    <MapPin className="w-3 h-3" />
-                    {event.lieu}
-                  </p>
-                  {event.organisateur && (
-                    <p className="text-gray-500 text-xs mt-1">{event.organisateur.structure}</p>
-                  )}
-                  <div className="flex flex-wrap gap-1 md:gap-2 mt-2 md:mt-3">
-                    {event.types_tickets && event.types_tickets.slice(0, 3).map((type) => (
-                      <span key={type.id} className="bg-gray-800 text-gray-300 text-[10px] md:text-xs px-2 py-1 rounded">
-                        {type.nom}: {type.prix?.toLocaleString()} FCFA
-                      </span>
-                    ))}
-                    {event.types_tickets && event.types_tickets.length > 3 && (
-                      <span className="text-gray-500 text-xs">+{event.types_tickets.length - 3}</span>
+            {filteredEvents.map((event) => {
+              const totalStock = getTotalStock(event.id)
+              const isAvailable = totalStock > 0
+              
+              return (
+                <div key={event.id} className="bg-gray-900 rounded-xl overflow-hidden hover:transform hover:scale-[1.02] transition-all duration-300 border border-gray-800">
+                  <div className="relative">
+                    <img
+                      src={event.affiche_url || '/images/default-event.jpg'}
+                      alt={event.nom}
+                      className="w-full h-48 object-cover"
+                      loading="lazy"
+                      onError={(e) => e.target.src = '/images/default-event.jpg'}
+                    />
+                    {event.types_tickets && event.types_tickets.length > 0 && (
+                      <div className="absolute top-2 right-2 bg-yellow-400 text-black text-xs font-bold px-3 py-1 rounded-full">
+                        {totalStock} places
+                      </div>
+                    )}
+                    {!isAvailable && (
+                      <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+                        <div className="bg-red-500/90 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4" />
+                          COMPLET
+                        </div>
+                      </div>
                     )}
                   </div>
-                  <Link
-                    to={`/boutique/${event.id}`}
-                    className="block mt-3 md:mt-4 bg-yellow-400 hover:bg-yellow-300 text-black text-center font-medium py-2 rounded-lg transition-colors text-sm md:text-base"
-                  >
-                    Voir
-                  </Link>
+                  <div className="p-4">
+                    <h3 className="text-white font-semibold text-base md:text-lg truncate">{event.nom}</h3>
+                    <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
+                      <Clock className="w-3 h-3" />
+                      {formatDate(event.date)}
+                    </p>
+                    <p className="text-gray-400 text-xs md:text-sm flex items-center gap-1 mt-1">
+                      <MapPin className="w-3 h-3" />
+                      {event.lieu}
+                    </p>
+                    {event.organisateur && (
+                      <p className="text-gray-500 text-xs mt-1">{event.organisateur.structure}</p>
+                    )}
+                    <div className="flex flex-wrap gap-1 md:gap-2 mt-2 md:mt-3">
+                      {event.types_tickets && event.types_tickets.slice(0, 3).map((type) => (
+                        <span key={type.id} className="bg-gray-800 text-gray-300 text-[10px] md:text-xs px-2 py-1 rounded">
+                          {type.nom}: {type.prix?.toLocaleString()} FCFA
+                        </span>
+                      ))}
+                      {event.types_tickets && event.types_tickets.length > 3 && (
+                        <span className="text-gray-500 text-xs">+{event.types_tickets.length - 3}</span>
+                      )}
+                    </div>
+                    
+                    {/* ===== BOUTON "VOIR" AVEC GESTION DU STOCK ===== */}
+                    {isAvailable ? (
+                      <Link
+                        to={`/boutique/${event.id}`}
+                        className="block mt-3 md:mt-4 bg-yellow-400 hover:bg-yellow-300 text-black text-center font-medium py-2 rounded-lg transition-colors text-sm md:text-base"
+                      >
+                        Voir
+                      </Link>
+                    ) : (
+                      <button
+                        disabled
+                        className="block mt-3 md:mt-4 bg-gray-700 text-gray-400 text-center font-medium py-2 rounded-lg cursor-not-allowed text-sm md:text-base w-full"
+                      >
+                        Complet
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

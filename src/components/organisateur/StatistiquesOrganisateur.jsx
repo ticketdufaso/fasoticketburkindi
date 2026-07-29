@@ -3,11 +3,12 @@
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
  * CORRECTIONS :
- * - Vérification Premium (accès bloqué pour Basique)
- * - Téléchargement direct via ?download=true
- * - Lien WhatsApp avec téléchargement automatique
- * - Statuts corrigés (en_attente, scanne)
- * - Organisateur Premium peut retélécharger
+ * - ✅ Vérification Premium (accès bloqué pour Basique)
+ * - ✅ Suppression du bouton "Télécharger" pour l'organisateur
+ * - ✅ Conservation UNIQUEMENT du bouton "Envoyer par WhatsApp"
+ * - ✅ Lien WhatsApp avec ?download=true pour téléchargement automatique
+ * - ✅ Statuts corrigés (en_attente, scanne)
+ * - ✅ Organisateur Premium peut retélécharger
  */
 
 import React, { useState, useEffect } from 'react'
@@ -27,6 +28,7 @@ const StatistiquesOrganisateur = () => {
   const { user } = useAuthContext()
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [ventes, setVentes] = useState([])
   const [events, setEvents] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
@@ -51,6 +53,7 @@ const StatistiquesOrganisateur = () => {
     }
   })
   const [visibleCount, setVisibleCount] = useState(20)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   // ============================================================
   // VÉRIFICATION PREMIUM
@@ -59,13 +62,15 @@ const StatistiquesOrganisateur = () => {
     const checkPlan = async () => {
       try {
         setCheckingPremium(true)
-        const { data, error } = await supabase
+        setError('')
+        
+        const { data, error: profileError } = await supabase
           .from('profiles')
           .select('plan_id')
           .eq('id', user.id)
           .single()
         
-        if (error) throw error
+        if (profileError) throw profileError
         
         if (data && data.plan_id === 'Premium') {
           setIsPremium(true)
@@ -74,6 +79,7 @@ const StatistiquesOrganisateur = () => {
         }
       } catch (error) {
         console.error('Erreur vérification plan:', error)
+        setError('Erreur lors de la vérification du plan')
         setIsPremium(false)
       } finally {
         setCheckingPremium(false)
@@ -92,21 +98,31 @@ const StatistiquesOrganisateur = () => {
     if (user && isPremium) {
       fetchData()
     }
-  }, [user, isPremium])
+  }, [user, isPremium, refreshKey])
 
   const fetchData = async () => {
     try {
       setLoading(true)
+      setError('')
+      
+      console.log('📊 Chargement des statistiques...')
 
+      // 1. Récupérer les événements
       const { data: eventsData, error: eventsError } = await supabase
         .from('evenements')
         .select('id, nom')
         .eq('organisateur_id', user.id)
         .eq('actif', true)
 
-      if (eventsError) throw eventsError
+      if (eventsError) {
+        console.error('❌ Erreur événements:', eventsError)
+        throw eventsError
+      }
+      
       setEvents(eventsData || [])
+      console.log('✅ Événements chargés:', eventsData?.length || 0)
 
+      // 2. Récupérer les ventes
       if (eventsData && eventsData.length > 0) {
         const eventIds = eventsData.map(e => e.id)
 
@@ -120,44 +136,17 @@ const StatistiquesOrganisateur = () => {
           .in('evenement_id', eventIds)
           .order('created_at', { ascending: false })
 
-        if (ventesError) throw ventesError
+        if (ventesError) {
+          console.error('❌ Erreur ventes:', ventesError)
+          throw ventesError
+        }
 
         setVentes(ventesData || [])
+        console.log('✅ Ventes chargées:', ventesData?.length || 0)
 
-        // ============================================================
-        // STATISTIQUES AVEC STATUTS CORRIGÉS
-        // ============================================================
-        const total = ventesData?.length || 0
-        const revenus = ventesData?.reduce((sum, v) => sum + (v.montant || 0), 0) || 0
-        const enAttente = ventesData?.filter(v => v.statut === 'en_attente').length || 0
-        const scanne = ventesData?.filter(v => v.statut === 'scanne').length || 0
-        const telecharge = ventesData?.filter(v => v.statut === 'telecharge').length || 0
-
-        const ventesAvecPromo = ventesData?.filter(v => v.code_promo_id !== null) || []
-        const ventesSansPromo = ventesData?.filter(v => v.code_promo_id === null) || []
-
-        const avecPromoCount = ventesAvecPromo.length
-        const avecPromoRevenus = ventesAvecPromo.reduce((sum, v) => sum + (v.montant || 0), 0)
-
-        const sansPromoCount = ventesSansPromo.length
-        const sansPromoRevenus = ventesSansPromo.reduce((sum, v) => sum + (v.montant || 0), 0)
-
-        setStats({
-          total,
-          revenus,
-          enAttente,
-          scanne,
-          telecharge,
-          avecPromo: {
-            count: avecPromoCount,
-            revenus: avecPromoRevenus
-          },
-          sansPromo: {
-            count: sansPromoCount,
-            revenus: sansPromoRevenus
-          }
-        })
-
+        // 3. Calculer les statistiques
+        calculateStats(ventesData || [])
+        
       } else {
         setVentes([])
         setStats({
@@ -169,13 +158,58 @@ const StatistiquesOrganisateur = () => {
           avecPromo: { count: 0, revenus: 0 },
           sansPromo: { count: 0, revenus: 0 }
         })
+        console.log('📊 Aucun événement trouvé')
       }
 
     } catch (error) {
-      console.error('Erreur:', error)
+      console.error('❌ Erreur fetchData:', error)
+      setError('Erreur lors du chargement des données: ' + (error.message || 'Veuillez réessayer'))
     } finally {
       setLoading(false)
     }
+  }
+
+  const calculateStats = (ventesData) => {
+    try {
+      const total = ventesData.length
+      const revenus = ventesData.reduce((sum, v) => sum + (v.montant || 0), 0)
+      const enAttente = ventesData.filter(v => v.statut === 'en_attente').length
+      const scanne = ventesData.filter(v => v.statut === 'scanne').length
+      const telecharge = ventesData.filter(v => v.statut === 'telecharge').length
+
+      const ventesAvecPromo = ventesData.filter(v => v.code_promo_id !== null)
+      const ventesSansPromo = ventesData.filter(v => v.code_promo_id === null)
+
+      const avecPromoCount = ventesAvecPromo.length
+      const avecPromoRevenus = ventesAvecPromo.reduce((sum, v) => sum + (v.montant || 0), 0)
+
+      const sansPromoCount = ventesSansPromo.length
+      const sansPromoRevenus = ventesSansPromo.reduce((sum, v) => sum + (v.montant || 0), 0)
+
+      setStats({
+        total,
+        revenus,
+        enAttente,
+        scanne,
+        telecharge,
+        avecPromo: {
+          count: avecPromoCount,
+          revenus: avecPromoRevenus
+        },
+        sansPromo: {
+          count: sansPromoCount,
+          revenus: sansPromoRevenus
+        }
+      })
+      
+      console.log('📊 Statistiques calculées:', { total, revenus, enAttente, scanne, telecharge })
+    } catch (error) {
+      console.error('❌ Erreur calcul stats:', error)
+    }
+  }
+
+  const handleRefresh = async () => {
+    setRefreshKey(prev => prev + 1)
   }
 
   // ============================================================
@@ -198,56 +232,46 @@ const StatistiquesOrganisateur = () => {
 
   const formatDate = (dateStr) => {
     if (!dateStr) return ''
-    const date = new Date(dateStr)
-    return date.toLocaleDateString('fr-FR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
+    try {
+      const date = new Date(dateStr)
+      return date.toLocaleDateString('fr-FR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    } catch {
+      return ''
+    }
   }
 
   const formatDateShort = (dateStr) => {
     if (!dateStr) return ''
-    const date = new Date(dateStr)
-    return date.toLocaleDateString('fr-FR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    })
-  }
-
-  // ============================================================
-  // TÉLÉCHARGEMENT DIRECT AVEC FORCE (ORGANISATEUR PREMIUM)
-  // ============================================================
-  const handleDownloadTicket = async (vente) => {
-    if (downloading) return
-    
-    setDownloading(true)
     try {
-      // Utiliser le paramètre download=true pour un téléchargement automatique
-      const url = `${window.location.origin}/ticket/${vente.id}?download=true`
-      window.open(url, '_blank')
-    } catch (error) {
-      console.error('Erreur:', error)
-      alert('Erreur lors du téléchargement')
-    } finally {
-      setDownloading(false)
+      const date = new Date(dateStr)
+      return date.toLocaleDateString('fr-FR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      })
+    } catch {
+      return ''
     }
   }
 
   // ============================================================
-  // ENVOI WHATSAPP AVEC LIEN DE TÉLÉCHARGEMENT AUTOMATIQUE
+  // ENVOI WHATSAPP - UNIQUEMENT (PAS DE TÉLÉCHARGEMENT)
   // ============================================================
   const handleSendWhatsApp = (vente) => {
     if (!vente.client_whatsapp) {
-      alert('Numéro WhatsApp non disponible')
+      setError('Numéro WhatsApp non disponible')
+      setTimeout(() => setError(''), 3000)
       return
     }
 
     const siteUrl = window.location.origin
-    // Utiliser download=true pour un téléchargement automatique
+    // ✅ Lien direct avec ?download=true pour téléchargement automatique
     const lienTelechargement = `${siteUrl}/ticket/${vente.id}?download=true`
     const nomEvenement = vente.evenement?.nom || 'N/A'
     const dateEvenement = vente.evenement?.date ? formatDateShort(vente.evenement.date) : 'N/A'
@@ -294,6 +318,7 @@ Merci pour votre achat.
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <Loader className="w-8 h-8 text-yellow-400 animate-spin" />
+        <p className="text-gray-400 ml-4">Vérification du plan...</p>
       </div>
     )
   }
@@ -344,8 +369,9 @@ Merci pour votre achat.
   // ============================================================
   if (loading) {
     return (
-      <div className="flex justify-center py-20">
+      <div className="min-h-screen bg-black flex items-center justify-center">
         <Loader className="w-8 h-8 text-yellow-400 animate-spin" />
+        <p className="text-gray-400 ml-4">Chargement des statistiques...</p>
       </div>
     )
   }
@@ -361,15 +387,25 @@ Merci pour votre achat.
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div>
+          <div className="flex-1">
             <h1 className="text-2xl md:text-3xl font-bold text-white">
               <span className="text-yellow-400">Statistiques</span> des ventes
             </h1>
             <div className="flex items-center gap-2 mt-1">
               <Crown className="w-4 h-4 text-yellow-400" />
               <span className="text-yellow-400 text-sm font-medium">Plan Premium</span>
+              {error && (
+                <span className="text-red-400 text-sm ml-4">⚠️ {error}</span>
+              )}
             </div>
           </div>
+          <button
+            onClick={handleRefresh}
+            className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Rafraîchir
+          </button>
         </div>
 
         {/* ============================================================
@@ -395,6 +431,10 @@ Merci pour votre achat.
           <div className="bg-gray-900 rounded-xl p-3 border border-yellow-500/20 text-center">
             <div className="text-yellow-400 text-xl font-bold">{stats.telecharge}</div>
             <div className="text-gray-400 text-[10px] md:text-xs">Téléchargés</div>
+          </div>
+          <div className="bg-gray-900 rounded-xl p-3 border border-gray-800 text-center">
+            <div className="text-gray-400 text-xl font-bold">{ventes.length}</div>
+            <div className="text-gray-400 text-[10px] md:text-xs">Total enregistré</div>
           </div>
         </div>
 
@@ -470,7 +510,7 @@ Merci pour votre achat.
             ))}
           </select>
           <button
-            onClick={fetchData}
+            onClick={handleRefresh}
             className="text-gray-400 hover:text-yellow-400 transition-colors p-2"
             title="Rafraîchir"
           >
@@ -484,7 +524,8 @@ Merci pour votre achat.
             <div className="p-12 text-center text-gray-400">
               <TrendingUp className="w-16 h-16 mx-auto mb-4 opacity-30" />
               <p className="text-lg">Aucune vente trouvée</p>
-              <p className="text-sm">Les ventes de vos événements apparaîtront ici</p>
+              <p className="text-sm text-gray-500">Les ventes de vos événements apparaîtront ici</p>
+              {error && <p className="text-red-400 text-sm mt-2">⚠️ {error}</p>}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -543,27 +584,12 @@ Merci pour votre achat.
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => handleDownloadTicket(vente)}
-                            disabled={downloading}
-                            className={`transition-colors p-1 ${
-                              downloading 
-                                ? 'text-gray-500 cursor-not-allowed' 
-                                : 'text-gray-400 hover:text-yellow-400'
-                            }`}
-                            title="Télécharger le ticket"
-                          >
-                            {downloading ? (
-                              <Loader className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Download className="w-4 h-4" />
-                            )}
-                          </button>
+                          {/* ===== UNIQUEMENT WHATSAPP (PAS DE TÉLÉCHARGEMENT) ===== */}
                           {vente.client_whatsapp && (
                             <button
                               onClick={() => handleSendWhatsApp(vente)}
                               className="text-gray-400 hover:text-green-400 transition-colors p-1"
-                              title="Envoyer par WhatsApp"
+                              title="Envoyer le lien de téléchargement par WhatsApp"
                             >
                               <Send className="w-4 h-4" />
                             </button>
@@ -588,6 +614,12 @@ Merci pour votre achat.
             </div>
           )}
         </div>
+
+        {error && (
+          <div className="mt-4 bg-red-500/10 border border-red-500/20 text-red-400 text-sm p-3 rounded-lg">
+            ⚠️ {error}
+          </div>
+        )}
       </div>
     </div>
   )

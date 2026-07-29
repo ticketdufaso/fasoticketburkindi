@@ -6,11 +6,20 @@
  * - Vérification du montant
  * - Verrouillage pour éviter les conflits
  * - Transaction marquée immédiatement après validation
+ * - ✅ CORRECTION : Vérification dans paiements_organisateurs SANS filtre de statut
+ * - ✅ CORRECTION : Recherche avec normalisation pour les ID avec/sans points
+ * - ✅ CORRECTION : Mise à jour de la ligne existante (pas de nouveau paiement)
+ * - ✅ CORRECTION : Éviter les doublons dans paiements_plans (vérification source + existence)
+ * - ✅ CORRECTION : Messages d'erreur explicites pour chaque vérification
+ * - ✅ CORRECTION : RLS corrigée (lecture publique)
+ * - ✅ CORRECTION : Vérifications dans l'ordre (existence, dépôt, montant, statut)
+ * - ✅ CORRECTION : Affichage du nom associé depuis numeros_acceptes
+ * - ✅ CORRECTION : Validation Orange Money UNIQUEMENT (pas le téléphone)
  */
 
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../../lib/supabase'  // ← CORRIGÉ : ../lib → ../../lib
+import { supabase } from '../../lib/supabase'
 import { 
   ArrowLeft, Shield, CheckCircle, AlertCircle, Copy, Phone, Loader,
   Smartphone, User, Mail, Building, Lock, Key, Eye, EyeOff,
@@ -26,6 +35,7 @@ const PaiementPlan = () => {
   const [step, setStep] = useState(1)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [nomAssociePaiement, setNomAssociePaiement] = useState('')
   const [formData, setFormData] = useState({
     email: '',
     structure: '',
@@ -70,6 +80,46 @@ const PaiementPlan = () => {
     fetchPlan()
   }, [planId])
 
+  // ============================================================
+  // RÉCUPÉRATION DU NOM ASSOCIÉ DEPUIS numeros_acceptes
+  // ============================================================
+  useEffect(() => {
+    const fetchNomAssocie = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('numeros_acceptes')
+          .select('nom_associe')
+          .eq('actif', true)
+          .eq('is_default', true)
+          .single()
+
+        if (!error && data) {
+          setNomAssociePaiement(data.nom_associe || 'Non renseigné')
+        } else {
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('numeros_acceptes')
+            .select('nom_associe')
+            .eq('actif', true)
+            .limit(1)
+            .single()
+
+          if (!fallbackError && fallbackData) {
+            setNomAssociePaiement(fallbackData.nom_associe || 'Non renseigné')
+          } else {
+            setNomAssociePaiement('Non renseigné')
+          }
+        }
+      } catch (error) {
+        console.error('Erreur récupération nom associé:', error)
+        setNomAssociePaiement('Non renseigné')
+      }
+    }
+
+    if (plan) {
+      fetchNomAssocie()
+    }
+  }, [plan])
+
   const copyToClipboard = (text) => {
     navigator.clipboard?.writeText(text)
     setCopied(true)
@@ -83,7 +133,105 @@ const PaiementPlan = () => {
   }
 
   // ============================================================
-  // CORRECTION : VALIDATION DU PAIEMENT AVEC VÉRIFICATION DU PRIX
+  // ✅ FONCTION : VALIDER UN NUMÉRO ORANGE (2ème chiffre = 4,5,6,7)
+  // ============================================================
+  const estNumeroOrange = (numero) => {
+    if (!numero || numero.length < 2) return false
+    const deuxiemeChiffre = numero.charAt(1)
+    const chiffresOrange = ['4', '5', '6', '7']
+    return chiffresOrange.includes(deuxiemeChiffre)
+  }
+
+  // ============================================================
+  // ✅ FONCTION : NORMALISER L'ID (supprimer les points)
+  // ============================================================
+  const normaliserId = (id) => {
+    if (!id) return ''
+    return id.replace(/\./g, '').toUpperCase()
+  }
+
+  // ============================================================
+  // ✅ AJOUT : AJOUTER AUX REVENUS (VÉRIFICATION COMPLÈTE - PAS DE DOUBLON)
+  // ============================================================
+  const ajouterRevenus = async (userId, planNom, montant, sourcePaiement) => {
+    try {
+      // ✅ VÉRIFICATION 1 : Si la source est admin_manuel ou gateway
+      // Ces paiements existent déjà dans paiements_organisateurs
+      // On ne doit PAS créer de nouveau paiement dans paiements_plans
+      if (sourcePaiement === 'admin_manuel' || sourcePaiement === 'gateway') {
+        return true
+      }
+
+      // ✅ VÉRIFICATION 2 : Vérifier si un paiement existe déjà dans paiements_organisateurs
+      // pour le même organisateur avec le même montant
+      const { data: existingOrg, error: checkOrgError } = await supabase
+        .from('paiements_organisateurs')
+        .select('id')
+        .eq('organisateur_id', userId)
+        .eq('montant', montant)
+        .eq('statut', 'valide')
+        .maybeSingle()
+
+      if (checkOrgError && checkOrgError.code !== 'PGRST116') {
+        console.error('Erreur vérification paiements_organisateurs:', checkOrgError)
+      }
+
+      // Si un paiement existe déjà dans paiements_organisateurs, ne pas créer de doublon
+      if (existingOrg) {
+        return true
+      }
+
+      // ✅ VÉRIFICATION 3 : Vérifier si un paiement existe déjà dans paiements_plans
+      const { data: existingPlan, error: checkPlanError } = await supabase
+        .from('paiements_plans')
+        .select('id')
+        .eq('organisateur_id', userId)
+        .eq('plan_id', planNom)
+        .eq('montant', montant)
+        .eq('statut', 'valide')
+        .maybeSingle()
+
+      if (checkPlanError && checkPlanError.code !== 'PGRST116') {
+        console.error('Erreur vérification paiements_plans:', checkPlanError)
+      }
+
+      // Si un paiement existe déjà dans paiements_plans, ne pas créer de doublon
+      if (existingPlan) {
+        return true
+      }
+
+      // ✅ TOUTES LES VÉRIFICATIONS SONT PASSÉES
+      // On peut créer le paiement dans paiements_plans
+      const transactionId = `ACHAT_${Date.now()}_${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+      const numeroDepot = `ACHAT_${Math.random().toString(36).substring(2, 10).toUpperCase()}`
+
+      const { error } = await supabase
+        .from('paiements_plans')
+        .insert([{
+          organisateur_id: userId,
+          plan_id: planNom,
+          montant: montant,
+          transaction_id: transactionId,
+          numero_depot: numeroDepot,
+          statut: 'valide',
+          source: 'organisateur_achat',
+          created_at: new Date().toISOString()
+        }])
+
+      if (error) {
+        console.error('❌ Erreur insertion paiements_plans:', error)
+        return false
+      }
+
+      return true
+    } catch (error) {
+      console.error('❌ Erreur ajout revenus:', error)
+      return false
+    }
+  }
+
+  // ============================================================
+  // ✅ VALIDATION DU PAIEMENT (SANS FILTRE DE STATUT)
   // ============================================================
 
   const handlePaymentValidation = async (e) => {
@@ -94,91 +242,116 @@ const PaiementPlan = () => {
 
     const { transactionId, numeroDepot } = formData
 
-    if (!transactionId || transactionId.length < 5) {
-      setError('❌ ID Transaction invalide')
+    // === NETTOYAGE ===
+    const cleanTransactionId = transactionId.trim()
+    const cleanNumeroDepot = numeroDepot.trim()
+
+    // === VALIDATION DE BASE ===
+    if (!cleanTransactionId || cleanTransactionId.length < 5) {
+      setError('❌ ID Transaction invalide (minimum 5 caractères)')
       setSubmitting(false)
       return
     }
-    if (!numeroDepot || !/^[0-9]{8}$/.test(numeroDepot)) {
+    if (!cleanNumeroDepot || !/^[0-9]{8}$/.test(cleanNumeroDepot)) {
       setError('❌ Numéro de dépôt invalide (ex: 70123456)')
       setSubmitting(false)
       return
     }
 
     try {
-      // ============================================================
-      // CORRECTION 1 : VÉRIFIER LE MONTANT AVANT TOUT
-      // ============================================================
-      
-      // D'abord, récupérer la transaction pour vérifier le montant
-      const { data: paiement, error: checkError } = await supabase
-        .from('paiements_plans')
-        .select('*')
-        .eq('transaction_id', transactionId)
-        .eq('numero_depot', numeroDepot)
-        .single()
+      // ✅ Normaliser l'ID saisi
+      const idNormaliseSaisi = normaliserId(cleanTransactionId)
 
-      if (checkError || !paiement) {
+      // ✅ Récupérer TOUS les paiements (SANS filtre de statut)
+      const { data: paiements, error: listError } = await supabase
+        .from('paiements_organisateurs')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (listError) {
+        console.error('Erreur récupération paiements:', listError)
+        setError('❌ Erreur lors de la vérification. Veuillez réessayer.')
+        setSubmitting(false)
+        return
+      }
+
+      // ✅ Chercher le paiement correspondant (normalisé)
+      const paiementTrouve = paiements?.find(p => {
+        const idBaseNormalise = normaliserId(p.transaction_id)
+        return idBaseNormalise === idNormaliseSaisi
+      })
+
+      // ❌ Si la transaction n'existe pas
+      if (!paiementTrouve) {
         setError('❌ ID Transaction non trouvé. Veuillez vérifier votre ID.')
         setSubmitting(false)
         return
       }
 
-      // ============================================================
-      // CORRECTION 2 : VÉRIFICATION DU MONTANT
-      // ============================================================
-      
+      const paiement = paiementTrouve
+
+      // ✅ VÉRIFICATION 2 : Numéro de dépôt correspond
+      if (paiement.numero_depot !== cleanNumeroDepot) {
+        setError(`❌ Le numéro de dépôt (${cleanNumeroDepot}) ne correspond pas à la transaction.`)
+        setSubmitting(false)
+        return
+      }
+
+      // ✅ VÉRIFICATION 3 : Montant correspond au prix du plan
       if (paiement.montant !== plan.prix) {
         setError(`❌ Le montant (${paiement.montant.toLocaleString()} FCFA) ne correspond pas au prix du plan (${plan.prix.toLocaleString()} FCFA).`)
         setSubmitting(false)
         return
       }
 
-      // ============================================================
-      // CORRECTION 3 : VÉRIFICATION DU STATUT
-      // ============================================================
-      
-      if (paiement.statut !== 'en_attente') {
-        setError('❌ Cette transaction a déjà été utilisée.')
+      // ✅ VÉRIFICATION 4 : Vérifier le statut
+      if (paiement.statut === 'valide') {
+        setError('❌ Cette transaction a déjà été utilisée et validée.')
         setSubmitting(false)
         return
       }
 
-      // ============================================================
-      // CORRECTION 4 : MARQUER LA TRANSACTION COMME UTILISÉE 
-      // AVEC VERROUILLAGE POUR ÉVITER LES CONFLITS
-      // ============================================================
+      if (paiement.statut === 'rejete') {
+        setError('❌ Cette transaction a été rejetée. Contactez l\'administrateur.')
+        setSubmitting(false)
+        return
+      }
+
+      if (paiement.statut !== 'en_attente') {
+        setError(`❌ Statut de la transaction invalide : "${paiement.statut}". Contactez l'administrateur.`)
+        setSubmitting(false)
+        return
+      }
+
+      // ✅ TOUTES LES VÉRIFICATIONS SONT PASSÉES
+      // ✅ On VA METTRE À JOUR la ligne existante (pas créer une nouvelle)
       
-      // Utiliser une transaction pour verrouiller la ligne
+      // Étape 1 : Marquer la transaction comme utilisée dans paiements_organisateurs
       const { error: updateError } = await supabase
-        .rpc('valider_paiement_plan', {
-          p_transaction_id: transactionId,
-          p_numero_depot: numeroDepot,
-          p_plan_nom: plan.nom
+        .from('paiements_organisateurs')
+        .update({ 
+          statut: 'valide',
+          updated_at: new Date().toISOString()
         })
+        .eq('id', paiement.id)
 
       if (updateError) {
-        console.error('Erreur validation:', updateError)
-        if (updateError.message?.includes('already used') || updateError.message?.includes('déjà utilisée')) {
-          setError('❌ Cette transaction a déjà été utilisée par un autre utilisateur.')
-        } else {
-          setError('❌ Erreur lors de la validation du paiement.')
-        }
+        console.error('Erreur validation paiements_organisateurs:', updateError)
+        setError('❌ Erreur lors de la validation du paiement. Veuillez réessayer.')
         setSubmitting(false)
         return
       }
 
-      // ============================================================
-      // TOUT EST OK
-      // ============================================================
-      
-      setSuccess('✅ Paiement validé ! Créez votre compte maintenant.')
+      // ✅ Stocker l'ID du paiement et sa source pour la mise à jour après la création du compte
       sessionStorage.setItem('paiement_id', paiement.id)
+      sessionStorage.setItem('paiement_source', paiement.source || '')
+      
+      setSuccess('✅ Paiement validé avec succès ! Créez votre compte maintenant.')
       setStep(2)
       
     } catch (error) {
       console.error('Erreur:', error)
-      setError('Erreur lors de la vérification: ' + (error.message || 'Veuillez réessayer.'))
+      setError('❌ Erreur lors de la vérification: ' + (error.message || 'Veuillez réessayer.'))
     } finally {
       setSubmitting(false)
     }
@@ -205,16 +378,26 @@ const PaiementPlan = () => {
       setSubmitting(false)
       return
     }
+    
+    // ✅ TÉLÉPHONE : Pas de validation Orange (tout numéro fonctionne)
     if (!formData.telephone || !/^[0-9]{8}$/.test(formData.telephone)) {
-      setError('Téléphone invalide (ex: 70123456)')
+      setError('Téléphone invalide (ex: 77777777)')
       setSubmitting(false)
       return
     }
+
+    // ✅ ORANGE MONEY : Validation Orange UNIQUEMENT
     if (!formData.phoneOm || !/^[0-9]{8}$/.test(formData.phoneOm)) {
-      setError('Numéro Orange Money invalide (ex: 70123456)')
+      setError('Numéro Orange Money invalide (ex: 77777777)')
       setSubmitting(false)
       return
     }
+    if (!estNumeroOrange(formData.phoneOm)) {
+      setError('❌ Le numéro Orange Money doit être un numéro Orange (2ème chiffre = 4, 5, 6 ou 7).')
+      setSubmitting(false)
+      return
+    }
+
     if (!formData.nomAssocie || formData.nomAssocie.length < 2) {
       setError('Nom associé au compte Orange Money requis')
       setSubmitting(false)
@@ -243,6 +426,8 @@ const PaiementPlan = () => {
         setSubmitting(false)
         return
       }
+
+      const paiementSource = sessionStorage.getItem('paiement_source') || ''
 
       // Créer l'utilisateur
       const userData = {
@@ -279,7 +464,7 @@ const PaiementPlan = () => {
             .single()
           
           if (existingUser) {
-            await createProfile(existingUser.id, paiementId)
+            await createProfile(existingUser.id, paiementId, paiementSource)
             return
           }
         }
@@ -288,7 +473,7 @@ const PaiementPlan = () => {
 
       if (!authData.user) throw new Error('Erreur de création utilisateur')
 
-      await createProfile(authData.user.id, paiementId)
+      await createProfile(authData.user.id, paiementId, paiementSource)
 
     } catch (error) {
       setError(error.message || 'Erreur lors de la création du compte')
@@ -297,7 +482,7 @@ const PaiementPlan = () => {
     }
   }
 
-  const createProfile = async (userId, paiementId) => {
+  const createProfile = async (userId, paiementId, paiementSource) => {
     try {
       const expireDate = new Date(Date.now() + plan.duree_jours * 24 * 60 * 60 * 1000)
 
@@ -325,20 +510,34 @@ const PaiementPlan = () => {
 
       if (profileError) throw profileError
 
-      await supabase
-        .from('paiements_plans')
+      // ✅ ÉTAPE IMPORTANTE : Mettre à jour le paiement dans paiements_organisateurs
+      // avec l'ID de l'organisateur (pour lier le paiement au compte)
+      const { error: updatePaiementError } = await supabase
+        .from('paiements_organisateurs')
         .update({ 
           organisateur_id: userId,
           updated_at: new Date().toISOString()
         })
         .eq('id', paiementId)
 
-      sessionStorage.removeItem('paiement_id')
+      if (updatePaiementError) {
+        console.error('Erreur mise à jour paiement organisateur:', updatePaiementError)
+        // On continue quand même, ce n'est pas bloquant
+      }
 
-      // Déconnecter l'utilisateur après la création
+      // ✅ AJOUT : Ajouter aux revenus (dans paiements_plans) - AVEC VÉRIFICATION COMPLÈTE
+      // La fonction ajouterRevenus vérifie :
+      // 1. Si la source est admin_manuel ou gateway → ne pas créer
+      // 2. Si un paiement existe déjà dans paiements_organisateurs → ne pas créer
+      // 3. Si un paiement existe déjà dans paiements_plans → ne pas créer
+      await ajouterRevenus(userId, plan.nom, plan.prix, paiementSource)
+
+      sessionStorage.removeItem('paiement_id')
+      sessionStorage.removeItem('paiement_source')
+
       await supabase.auth.signOut()
       
-      setSuccess('Compte créé avec succès !')
+      setSuccess('✅ Compte créé avec succès !')
       setStep(3)
       
       setTimeout(() => navigate('/connexion'), 3000)
@@ -426,7 +625,7 @@ const PaiementPlan = () => {
           {step === 1 && (
             <div>
               <div className="bg-gray-800 rounded-lg p-4 mb-6">
-                <p className="text-gray-400 text-sm mb-2">Code de paiement Orange Money</p>
+                <p className="text-white font-bold text-sm mb-2">Code de paiement Orange Money</p>
                 <div className="flex items-center gap-2 bg-black rounded-lg p-3">
                   <code className="text-yellow-400 text-sm font-mono flex-1 break-all">
                     {generateUSSD()}
@@ -439,40 +638,46 @@ const PaiementPlan = () => {
                   </button>
                 </div>
                 {copied && <p className="text-green-400 text-xs mt-1">✓ Copié !</p>}
-                <p className="text-gray-500 text-xs mt-2 flex items-center gap-1">
+                <p className="text-white font-bold text-xs mt-2 flex items-center gap-1">
                   <Phone className="w-3 h-3" />
-                  Composez ce code sur votre téléphone Orange Money
+                  Copiez et composer ce code pour faire le paiement!
                 </p>
                 <div className="mt-3 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                  <p className="text-yellow-400 text-xs font-medium">⚠️ Important :</p>
-                  <p className="text-gray-400 text-xs mt-1">
-                    Montant à payer : {plan.prix.toLocaleString()} FCFA
-                    <br />Vérifiez que le montant correspond avant de valider.
+                  <p className="text-yellow-400 text-xs font-bold">⚠️ Important :</p>
+                  <p className="text-white font-bold text-xs mt-1">
+                    Montant à payer : <span className="text-yellow-400 font-bold">{plan.prix.toLocaleString()} FCFA</span>
+                    <br />
+                    Nom associé : <span className="text-yellow-400 font-bold">{nomAssociePaiement}</span>
+                    <br />
+                    <span className="text-yellow-400 font-bold">Vérifiez que le montant et le nom correspondent avant de valider.</span>
                   </p>
                 </div>
               </div>
 
               <form onSubmit={handlePaymentValidation} className="space-y-4">
                 <div>
-                  <label className="text-gray-400 text-sm block mb-1">ID Transaction *</label>
+                  <label className="text-yellow-400 font-bold text-sm block mb-1">ID Transaction *</label>
                   <input
                     type="text"
                     value={formData.transactionId}
                     onChange={(e) => setFormData({ ...formData, transactionId: e.target.value })}
                     className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-yellow-400 text-sm font-mono"
-                    placeholder="PP260424.1234.56789012"
+                    placeholder="PP123456.1234.12345678"
                     required
                   />
+                  <p className="text-white font-bold text-[10px] mt-1">
+                    Exemple: PP123456.1234.12345678 ou PP123456123412345678 (avec ou sans points)
+                  </p>
                 </div>
 
                 <div>
-                  <label className="text-gray-400 text-sm block mb-1">Numéro de dépôt *</label>
+                  <label className="text-yellow-400 font-bold text-sm block mb-1">Numéro de dépôt *</label>
                   <input
                     type="tel"
                     value={formData.numeroDepot}
                     onChange={(e) => setFormData({ ...formData, numeroDepot: e.target.value })}
                     className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-yellow-400 text-sm"
-                    placeholder="70123456"
+                    placeholder="77777777"
                     required
                   />
                 </div>
@@ -498,13 +703,13 @@ const PaiementPlan = () => {
           {/* ===== ÉTAPE 2 : CRÉATION DU COMPTE ===== */}
           {step === 2 && (
             <div>
-              <h2 className="text-white font-semibold text-lg mb-4">Créez votre compte organisateur</h2>
-              <p className="text-gray-400 text-sm mb-6">Complétez vos informations pour activer votre espace</p>
+              <h2 className="text-yellow-400 font-bold text-lg mb-4">Créez votre compte organisateur</h2>
+              <p className="text-white font-bold text-sm mb-6">Complétez vos informations pour activer votre espace</p>
 
               <form onSubmit={handleCreateAccount} className="space-y-4">
                 {/* Email */}
                 <div>
-                  <label className="text-gray-400 text-sm block mb-1">Email *</label>
+                  <label className="text-yellow-400 font-bold text-sm block mb-1">Email *</label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                     <input
@@ -520,7 +725,7 @@ const PaiementPlan = () => {
 
                 {/* Structure */}
                 <div>
-                  <label className="text-gray-400 text-sm block mb-1">Nom de la structure *</label>
+                  <label className="text-yellow-400 font-bold text-sm block mb-1">Nom de la structure *</label>
                   <div className="relative">
                     <Building className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                     <input
@@ -534,9 +739,9 @@ const PaiementPlan = () => {
                   </div>
                 </div>
 
-                {/* Téléphone */}
+                {/* Téléphone - PAS DE VALIDATION ORANGE */}
                 <div>
-                  <label className="text-gray-400 text-sm block mb-1">Téléphone *</label>
+                  <label className="text-yellow-400 font-bold text-sm block mb-1">Téléphone *</label>
                   <div className="relative">
                     <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                     <input
@@ -544,7 +749,7 @@ const PaiementPlan = () => {
                       value={formData.telephone}
                       onChange={(e) => setFormData({ ...formData, telephone: e.target.value })}
                       className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-yellow-400 text-sm"
-                      placeholder="70123456"
+                      placeholder="77777777"
                       required
                     />
                   </div>
@@ -552,11 +757,11 @@ const PaiementPlan = () => {
 
                 {/* Configuration Orange Money */}
                 <div className="border-t border-gray-700 pt-4">
-                  <h3 className="text-white font-semibold text-sm mb-3">Configuration Orange Money</h3>
+                  <h3 className="text-white font-bold text-sm mb-3">Configuration Orange Money</h3>
                   
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="text-gray-400 text-sm block mb-1">Orange Money *</label>
+                      <label className="text-yellow-400 font-bold text-sm block mb-1">Orange Money *</label>
                       <div className="relative">
                         <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                         <input
@@ -564,13 +769,13 @@ const PaiementPlan = () => {
                           value={formData.phoneOm}
                           onChange={(e) => setFormData({ ...formData, phoneOm: e.target.value })}
                           className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-yellow-400 text-sm"
-                          placeholder="70123456"
+                          placeholder="77777777"
                           required
                         />
                       </div>
                     </div>
                     <div>
-                      <label className="text-gray-400 text-sm block mb-1">Nom associé *</label>
+                      <label className="text-yellow-400 font-bold text-sm block mb-1">Nom associé *</label>
                       <div className="relative">
                         <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                         <input
@@ -582,17 +787,17 @@ const PaiementPlan = () => {
                           required
                         />
                       </div>
-                      <p className="text-red-400 text-[10px] mt-1">
-                        ⚠️ Si votre nom Orange Money est TRAORE Ibrahim, écrivez Ibrahim TRAORE
+                      <p className="text-red-500 font-bold text-[10px] mt-1">
+                        ⚠️ Si votre nom Orange Money est TRAORE MOHAMED, écrivez MOHAMED TRAORE
                       </p>
                     </div>
                   </div>
 
                   {/* Type de compte */}
                   <div className="mt-3">
-                    <label className="text-gray-400 text-sm block mb-2">Type de compte *</label>
+                    <label className="text-white font-bold text-sm block mb-2">Type de compte *</label>
                     <div className="flex gap-4">
-                      <label className="flex items-center gap-2 text-gray-300 text-sm">
+                      <label className="flex items-center gap-2 text-yellow-400 font-bold text-sm">
                         <input
                           type="radio"
                           name="typeCompte"
@@ -603,7 +808,7 @@ const PaiementPlan = () => {
                         />
                         Compte courant
                       </label>
-                      <label className="flex items-center gap-2 text-gray-300 text-sm">
+                      <label className="flex items-center gap-2 text-yellow-400 font-bold text-sm">
                         <input
                           type="radio"
                           name="typeCompte"
@@ -620,9 +825,9 @@ const PaiementPlan = () => {
                   {/* Format USSD pour compte commercial */}
                   {formData.typeCompte === 'commercial' && (
                     <div className="mt-3 p-3 bg-gray-800 rounded-lg">
-                      <label className="text-gray-400 text-sm block mb-2">Format de paiement *</label>
+                      <label className="text-yellow-400 font-bold text-sm block mb-2">Format de paiement *</label>
                       <div className="flex flex-col gap-2">
-                        <label className="flex items-center gap-2 text-gray-300 text-sm">
+                        <label className="flex items-center gap-2 text-white font-bold text-sm">
                           <input
                             type="radio"
                             name="formatUssd"
@@ -633,7 +838,7 @@ const PaiementPlan = () => {
                           />
                           Format 3 (code marchand) - <code className="text-yellow-400 text-xs">*144*3*code_marchand*montant#</code>
                         </label>
-                        <label className="flex items-center gap-2 text-gray-300 text-sm">
+                        <label className="flex items-center gap-2 text-white font-bold text-sm">
                           <input
                             type="radio"
                             name="formatUssd"
@@ -648,7 +853,7 @@ const PaiementPlan = () => {
 
                       {formData.formatUssd === 'format_3' && (
                         <div className="mt-3">
-                          <label className="text-gray-400 text-sm block mb-1">Code marchand *</label>
+                          <label className="text-yellow-400 font-bold text-sm block mb-1">Code marchand *</label>
                           <input
                             type="text"
                             value={formData.codeMarchand}
@@ -665,7 +870,7 @@ const PaiementPlan = () => {
                   {/* Format pour compte courant */}
                   {formData.typeCompte === 'courant' && (
                     <div className="mt-3 p-3 bg-gray-800 rounded-lg">
-                      <p className="text-gray-300 text-sm">
+                      <p className="text-white font-bold text-sm">
                         Format : <code className="text-yellow-400 text-xs">*144*2*1*{formData.phoneOm || '70123456'}*montant#</code>
                       </p>
                     </div>
@@ -676,7 +881,7 @@ const PaiementPlan = () => {
                     <div className="mt-3 p-3 bg-gray-700 rounded-lg border border-gray-600">
                       <div className="flex items-center gap-2">
                         <CreditCard className="w-4 h-4 text-yellow-400" />
-                        <p className="text-gray-400 text-xs">📋 Format de paiement généré :</p>
+                        <p className="text-white font-bold text-xs">📋 Format de paiement généré :</p>
                       </div>
                       <code className="text-yellow-400 text-sm font-mono break-all mt-1 block">
                         {getUssdPreview() || 'Remplissez les champs ci-dessus pour voir le format'}
@@ -687,11 +892,11 @@ const PaiementPlan = () => {
 
                 {/* Mot de passe */}
                 <div className="border-t border-gray-700 pt-4">
-                  <h3 className="text-white font-semibold text-sm mb-3">Sécurité</h3>
+                  <h3 className="text-white font-bold text-sm mb-3">Sécurité</h3>
                   
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="text-gray-400 text-sm block mb-1">Mot de passe *</label>
+                      <label className="text-yellow-400 font-bold text-sm block mb-1">Mot de passe *</label>
                       <div className="relative">
                         <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                         <input
@@ -713,7 +918,7 @@ const PaiementPlan = () => {
                       </div>
                     </div>
                     <div>
-                      <label className="text-gray-400 text-sm block mb-1">Confirmer *</label>
+                      <label className="text-yellow-400 font-bold text-sm block mb-1">Confirmer *</label>
                       <div className="relative">
                         <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                         <input
@@ -740,7 +945,7 @@ const PaiementPlan = () => {
                 <div className="bg-gray-800 rounded-lg p-3">
                   <div className="flex items-center gap-2">
                     <DollarSign className="w-4 h-4 text-yellow-400" />
-                    <p className="text-gray-400 text-sm">
+                    <p className="text-white font-bold text-sm">
                       Récapitulatif : Forfait {plan.nom} - {plan.prix.toLocaleString()} FCFA
                     </p>
                   </div>
@@ -781,7 +986,7 @@ const PaiementPlan = () => {
               <div className="mt-4 flex justify-center">
                 <button
                   onClick={() => navigate('/connexion')}
-                  className="bg-yellow-400 hover:bg-yellow-300 text-black font-semibold px-6 py-2 rounded-lg transition-colors"
+                  className="bg-yellow-400 hover:bg-yellow-300 text-black font-bold px-6 py-2 rounded-lg transition-colors"
                 >
                   Se connecter maintenant
                 </button>

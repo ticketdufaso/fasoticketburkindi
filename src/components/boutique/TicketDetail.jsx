@@ -3,10 +3,15 @@
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
  * CORRECTIONS :
- * - Gestion des conflits pour les achats simultanés
- * - Décrémentation atomique du stock via RPC
- * - Gestion des codes promo avec conflits
- * - Vérification du stock en temps réel
+ * - ✅ Vérification que le paiement appartient au bon organisateur
+ * - ✅ Optimisation du chargement des types de tickets
+ * - ✅ Fallback pour les images (évite les erreurs)
+ * - ✅ Gestion des erreurs de chargement
+ * - ✅ Stock vérifié en temps réel
+ * - ✅ Nettoyage des ID (suppression des points, espaces, tirets)
+ * - ✅ Recherche avec ou sans points
+ * - ✅ Décrémentation du stock UNIQUEMENT dans la RPC (avec verrouillage)
+ * - ✅ Le bouton "Retour" redirige vers le dashboard si l'utilisateur est organisateur
  */
 
 import React, { useState, useEffect } from 'react'
@@ -15,7 +20,7 @@ import { supabase } from '../../lib/supabase'
 import { 
   ArrowLeft, MapPin, Clock, Calendar, Ticket, User, Phone, 
   ShoppingBag, AlertCircle, CheckCircle, Loader, Tag,
-  Percent, X
+  Percent, X, Eye, ImageOff
 } from 'lucide-react'
 
 const TicketDetail = () => {
@@ -25,6 +30,7 @@ const TicketDetail = () => {
   const [loading, setLoading] = useState(true)
   const [selectedType, setSelectedType] = useState(null)
   const [organisateur, setOrganisateur] = useState(null)
+  const [userRole, setUserRole] = useState(null)
   const [formData, setFormData] = useState({
     nom: '',
     whatsapp: '',
@@ -39,11 +45,29 @@ const TicketDetail = () => {
   const [step, setStep] = useState(1)
   const [submitting, setSubmitting] = useState(false)
   const [stockError, setStockError] = useState(false)
+  const [imageErrors, setImageErrors] = useState({})
+  const [loadingTypes, setLoadingTypes] = useState(true)
 
   useEffect(() => {
     const fetchEvent = async () => {
       try {
         setLoading(true)
+        setLoadingTypes(true)
+        
+        // Récupérer le rôle de l'utilisateur connecté
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('role')
+            .eq('id', session.user.id)
+            .single()
+          if (profile) {
+            setUserRole(profile.role)
+            console.log('👤 Rôle utilisateur:', profile.role)
+          }
+        }
+
         const { data, error } = await supabase
           .from('evenements')
           .select(`
@@ -70,10 +94,14 @@ const TicketDetail = () => {
           setOrganisateur(data.organisateur)
         }
         if (data.types_tickets && data.types_tickets.length > 0) {
-          setSelectedType(data.types_tickets[0])
+          // Sélectionner le premier type disponible avec stock > 0
+          const availableType = data.types_tickets.find(t => t.stock > 0)
+          setSelectedType(availableType || data.types_tickets[0])
         }
+        setLoadingTypes(false)
       } catch (error) {
         console.error('Erreur:', error)
+        setLoadingTypes(false)
       } finally {
         setLoading(false)
       }
@@ -114,8 +142,18 @@ const TicketDetail = () => {
   }
 
   // ============================================================
-  // APPLICATION DU CODE PROMO AVEC VÉRIFICATION DES TYPES
+  // NETTOYAGE DES ID
   // ============================================================
+
+  const cleanInput = (value) => {
+    if (!value) return ''
+    return value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+  }
+
+  // ============================================================
+  // APPLICATION DU CODE PROMO
+  // ============================================================
+
   const applyCodePromo = async () => {
     setError('')
     setSuccess('')
@@ -137,9 +175,15 @@ const TicketDetail = () => {
         .eq('code', formData.codePromo.toUpperCase())
         .eq('organisateur_id', event.organisateur_id)
         .eq('actif', true)
-        .single()
+        .maybeSingle()
 
-      if (error || !data) {
+      if (error) {
+        console.error('Erreur recherche code promo:', error)
+        setError('Erreur lors de la vérification du code promo')
+        return
+      }
+
+      if (!data) {
         setError('Code promo invalide ou expiré')
         return
       }
@@ -157,7 +201,6 @@ const TicketDetail = () => {
         return
       }
 
-      // Vérifier si le code a encore des utilisations disponibles
       if (data.quantite_max > 0 && data.utilisations >= data.quantite_max) {
         setError('Ce code promo a atteint sa limite d\'utilisations')
         return
@@ -186,7 +229,9 @@ const TicketDetail = () => {
       setCodePromoData(data)
       setCodePromoApplied(true)
       setSuccess(`✅ Code promo appliqué ! ${data.type === 'pourcentage' ? data.valeur + '%' : data.valeur + ' FCFA'} de réduction`)
+      
     } catch (error) {
+      console.error('Erreur:', error)
       setError('Erreur lors de l\'application du code promo')
     }
   }
@@ -198,13 +243,65 @@ const TicketDetail = () => {
     setSuccess('')
   }
 
-  const cleanInput = (value) => {
-    if (!value) return ''
-    return value.replace(/\s/g, '').trim()
+  // ============================================================
+  // RECHERCHE DU PAIEMENT - AVEC VÉRIFICATION DE L'ORGANISATEUR
+  // ============================================================
+
+  const findPaiement = async (cleanTransactionId, cleanNumeroDepot, organisateurId) => {
+    // 1. Recherche exacte (avec points) ET vérification de l'organisateur
+    let { data: paiement, error } = await supabase
+      .from('paiements_clients')
+      .select('*')
+      .eq('transaction_id', cleanTransactionId)
+      .eq('numero_depot', cleanNumeroDepot)
+      .eq('organisateur_id', organisateurId)  // ← ✅ VÉRIFICATION DE L'ORGANISATEUR
+      .maybeSingle()
+
+    if (error) {
+      console.error('Erreur recherche exacte:', error)
+      return { paiement: null, error }
+    }
+
+    if (paiement) {
+      return { paiement, error: null }
+    }
+
+    // 2. Recherche sans points AVEC vérification de l'organisateur
+    const { data: paiements, error: listError } = await supabase
+      .from('paiements_clients')
+      .select('*')
+      .eq('organisateur_id', organisateurId)  // ← ✅ VÉRIFICATION DE L'ORGANISATEUR
+      .eq('statut', 'en_attente')
+
+    if (listError) {
+      console.error('Erreur liste paiements:', listError)
+      return { paiement: null, error: listError }
+    }
+
+    if (paiements && paiements.length > 0) {
+      const found = paiements.find(p => {
+        const idBase = p.transaction_id.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+        return idBase === cleanTransactionId && p.numero_depot === cleanNumeroDepot
+      })
+      
+      if (found) {
+        return { paiement: found, error: null }
+      }
+    }
+
+    return { paiement: null, error: null }
   }
 
   // ============================================================
-  // PAIEMENT AVEC GESTION DES CONFLITS (ATOMIQUE)
+  // GESTION DES ERREURS D'IMAGE
+  // ============================================================
+
+  const handleImageError = (typeId) => {
+    setImageErrors(prev => ({ ...prev, [typeId]: true }))
+  }
+
+  // ============================================================
+  // PAIEMENT - AVEC VÉRIFICATION DE L'ORGANISATEUR
   // ============================================================
 
   const handlePayment = async (e) => {
@@ -214,13 +311,17 @@ const TicketDetail = () => {
     setStockError(false)
     setSubmitting(true)
 
-    // === NETTOYAGE ===
     const cleanNom = formData.nom.trim()
     const cleanWhatsapp = formData.whatsapp.replace(/\s/g, '').trim()
     const cleanTransactionId = cleanInput(formData.transactionId)
-    const cleanNumeroDepot = cleanInput(formData.numeroDepot)
+    const cleanNumeroDepot = formData.numeroDepot.replace(/\s/g, '').trim()
 
-    // === VALIDATION ===
+    console.log('🔍 Recherche paiement avec vérification organisateur:', {
+      transaction_id: cleanTransactionId,
+      numero_depot: cleanNumeroDepot,
+      organisateur_id: event.organisateur_id
+    })
+
     if (!cleanNom || cleanNom.length < 2) {
       setError('Veuillez entrer votre nom complet')
       setSubmitting(false)
@@ -257,47 +358,7 @@ const TicketDetail = () => {
     }))
 
     try {
-      // === 1. VÉRIFIER LE STOCK EN TEMPS RÉEL ===
-      const { data: typeExists, error: typeCheckError } = await supabase
-        .from('types_tickets')
-        .select('id, stock')
-        .eq('id', selectedType.id)
-        .single()
-
-      if (typeCheckError || !typeExists) {
-        setError('❌ Le type de ticket sélectionné n\'existe plus.')
-        setSubmitting(false)
-        return
-      }
-
-      if (typeExists.stock < 1) {
-        setStockError(true)
-        setError('❌ Stock épuisé pour ce type de ticket.')
-        setSubmitting(false)
-        return
-      }
-
-      // === 2. VÉRIFIER LA TRANSACTION ===
-      const { data: paiement, error: checkError } = await supabase
-        .from('paiements_organisateurs')
-        .select('*')
-        .eq('transaction_id', cleanTransactionId)
-        .eq('numero_depot', cleanNumeroDepot)
-        .maybeSingle()
-
-      if (checkError || !paiement) {
-        setError('❌ Transaction non trouvée. Vérifiez votre ID et numéro.')
-        setSubmitting(false)
-        return
-      }
-
-      if (paiement.statut !== 'en_attente') {
-        setError('❌ Cette transaction a déjà été utilisée.')
-        setSubmitting(false)
-        return
-      }
-
-      // === 3. CALCUL DU PRIX FINAL ===
+      // === 1. CALCUL DU PRIX FINAL ===
       let finalPrice = selectedType.prix
       let reduction = 0
       if (codePromoApplied && codePromoData) {
@@ -312,21 +373,57 @@ const TicketDetail = () => {
         reduction = Math.round(reduction)
       }
 
-      // === 4. VÉRIFIER LE MONTANT ===
+      console.log('✅ ÉTAPE 1 PASSÉE - Prix calculé:', finalPrice)
+
+      // === 2. RECHERCHE DU PAIEMENT AVEC VÉRIFICATION DE L'ORGANISATEUR ===
+      const { paiement, error: findError } = await findPaiement(
+        cleanTransactionId,
+        cleanNumeroDepot,
+        event.organisateur_id  // ← ✅ VÉRIFICATION DE L'ORGANISATEUR
+      )
+
+      if (findError) {
+        console.error('❌ Erreur findPaiement:', findError)
+        setError('Erreur lors de la vérification de la transaction')
+        setSubmitting(false)
+        return
+      }
+
+      console.log('📦 Paiement trouvé:', paiement)
+      console.log('📊 Statut du paiement:', paiement?.statut)
+      console.log('✅ ÉTAPE 2 PASSÉE - Paiement trouvé avec vérification organisateur')
+
+      if (!paiement) {
+        setError('❌ Transaction non trouvée ou appartient à un autre organisateur. Vérifiez votre ID et numéro.')
+        setSubmitting(false)
+        return
+      }
+
+      if (paiement.statut !== 'en_attente') {
+        console.log('❌ Statut invalide:', paiement.statut)
+        setError(`❌ Cette transaction a déjà été utilisée (statut: ${paiement.statut}).`)
+        setSubmitting(false)
+        return
+      }
+
+      console.log('✅ ÉTAPE 3 PASSÉE - Statut en_attente')
+
+      // === 3. VÉRIFIER LE MONTANT ===
+      console.log('💰 Montant paiement:', paiement.montant)
+      console.log('💰 Prix final:', finalPrice)
+
       if (paiement.montant !== finalPrice) {
+        console.log('❌ Montant invalide:', paiement.montant, 'vs', finalPrice)
         setError(`❌ Le montant (${paiement.montant} FCFA) ne correspond pas au prix du ticket (${finalPrice} FCFA).`)
         setSubmitting(false)
         return
       }
 
-      // === 5. APPEL DE LA FONCTION RPC POUR L'ACHAT ATOMIQUE ===
-      // Cette fonction fait tout en une seule transaction :
-      // - Vérifie le stock
-      // - Décrémente le stock
-      // - Marque la transaction comme utilisée
-      // - Crée la vente
-      // - Incrémente les utilisations du code promo
-      
+      console.log('✅ ÉTAPE 4 PASSÉE - Montant OK')
+
+      // === 4. APPEL RPC (LA VÉRIFICATION DU STOCK EST FAITE DANS LA RPC) ===
+      console.log('🚀 Appel RPC acheter_ticket...')
+
       const qrCode = `PP${Date.now()}.${Math.random().toString(36).substring(2, 10)}`
 
       const { data: result, error: rpcError } = await supabase.rpc('acheter_ticket', {
@@ -335,7 +432,7 @@ const TicketDetail = () => {
         p_client_nom: cleanNom,
         p_client_whatsapp: cleanWhatsapp,
         p_montant: finalPrice,
-        p_transaction_id: cleanTransactionId,
+        p_transaction_id: paiement.transaction_id,
         p_numero_depot: cleanNumeroDepot,
         p_qr_code: qrCode,
         p_code_promo_id: codePromoData?.id || null,
@@ -343,20 +440,22 @@ const TicketDetail = () => {
         p_reduction: reduction
       })
 
+      console.log('📦 Résultat RPC:', { result, rpcError })
+
       if (rpcError) {
-        console.error('Erreur RPC:', rpcError)
+        console.error('❌ Erreur RPC:', rpcError)
         
-        // Gérer les erreurs spécifiques
         if (rpcError.message?.includes('stock_insuffisant')) {
           setStockError(true)
           setError('❌ Stock épuisé ! Un autre client a acheté le dernier ticket.')
         } else if (rpcError.message?.includes('transaction_deja_utilisee')) {
           setError('❌ Cette transaction a déjà été utilisée par un autre client.')
-        } else if (rpcError.message?.includes('code_promo_epuise')) {
-          setError('❌ Ce code promo a été utilisé par un autre client et n\'est plus disponible.')
-        } else if (rpcError.message?.includes('stock_negatif')) {
-          setStockError(true)
-          setError('❌ Erreur de stock. Veuillez réessayer.')
+        } else if (rpcError.message?.includes('code_promo_inactif')) {
+          setError('❌ Ce code promo n\'est plus actif.')
+        } else if (rpcError.message?.includes('code_promo_limite_atteinte')) {
+          setError('❌ Ce code promo a atteint sa limite d\'utilisations.')
+        } else if (rpcError.message?.includes('PAYMENT_NOT_FOUND')) {
+          setError('❌ Transaction non trouvée ou appartient à un autre organisateur.')
         } else {
           setError('Erreur lors du paiement: ' + (rpcError.message || 'Veuillez réessayer'))
         }
@@ -365,22 +464,36 @@ const TicketDetail = () => {
       }
 
       if (!result || !result.success) {
+        console.error('❌ Résultat RPC échec:', result)
         setError(result?.message || 'Erreur lors du paiement')
         setSubmitting(false)
         return
       }
 
-      // === 6. SUCCÈS ===
+      console.log('✅ ÉTAPE 5 PASSÉE - RPC réussie')
+
+      // === 5. METTRE À JOUR LE STATUT DU PAIEMENT ===
+      const { error: updateError } = await supabase
+        .from('paiements_clients')
+        .update({ statut: 'valide', updated_at: new Date().toISOString() })
+        .eq('id', paiement.id)
+
+      if (updateError) {
+        console.error('❌ Erreur mise à jour paiement:', updateError)
+      }
+
+      console.log('✅ ÉTAPE 6 PASSÉE - Paiement validé')
+
       setSuccess('✅ Paiement validé ! Votre ticket est prêt.')
       setStep(2)
       
       setTimeout(() => {
-        navigate(`/ticket/${result.vente_id}?download=true`)
+        navigate(`/ticket/${result.vente_id}`)
       }, 2000)
       
     } catch (error) {
-      console.error('Erreur paiement:', error)
-      setError('Erreur lors du paiement: ' + (error.message || 'Veuillez réessayer'))
+      console.error('❌ Erreur inattendue dans handlePayment:', error)
+      setError('Erreur inattendue: ' + (error.message || 'Veuillez réessayer'))
     } finally {
       setSubmitting(false)
     }
@@ -422,15 +535,35 @@ const TicketDetail = () => {
   const ussdCode = generateUSSD()
   const showUssd = ussdCode && ussdCode.length > 5
 
+  // ============================================================
+  // DÉTERMINER SI ON AFFICHE LE FORMULAIRE D'ACHAT
+  // ============================================================
+  const showAchatForm = userRole !== 'organisateur' && userRole !== 'admin'
+
+  // ============================================================
+  // GESTION DU BOUTON RETOUR
+  // ============================================================
+  const handleBack = () => {
+    if (userRole === 'organisateur') {
+      navigate('/organisateur/dashboard')
+    } else if (userRole === 'admin') {
+      navigate('/admin/dashboard')
+    } else {
+      navigate('/boutique')
+    }
+  }
+
   return (
     <div className="min-h-screen bg-black py-8 md:py-12 px-4">
       <div className="max-w-4xl mx-auto">
         <button
-          onClick={() => navigate('/boutique')}
+          onClick={handleBack}
           className="flex items-center gap-2 text-gray-400 hover:text-yellow-400 transition-colors mb-6"
         >
           <ArrowLeft className="w-4 h-4" />
-          Retour à la boutique
+          {userRole === 'organisateur' ? 'Retour au dashboard' : 
+           userRole === 'admin' ? 'Retour au dashboard admin' : 
+           'Retour à la boutique'}
         </button>
 
         <div className="bg-gray-900 rounded-2xl overflow-hidden border border-gray-800">
@@ -480,64 +613,87 @@ const TicketDetail = () => {
               <p className="text-gray-300 text-sm mb-6 border-t border-gray-800 pt-4">{event.description}</p>
             )}
 
-            {step === 1 ? (
-              <>
-                <div className="mb-6">
-                  <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
-                    <Ticket className="w-5 h-5 text-yellow-400" />
-                    Types de tickets disponibles
-                  </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {event.types_tickets?.map((type) => {
-                      const isAvailable = type.stock > 0
-                      return (
-                        <button
-                          key={type.id}
-                          onClick={() => isAvailable && setSelectedType(type)}
-                          disabled={!isAvailable}
-                          className={`p-4 rounded-xl border-2 text-left transition-all ${
-                            selectedType?.id === type.id
-                              ? 'border-yellow-400 bg-yellow-400/10'
-                              : isAvailable
-                                ? 'border-gray-700 hover:border-gray-600 bg-gray-800'
-                                : 'border-gray-800 opacity-50 cursor-not-allowed bg-gray-900'
-                          }`}
-                        >
-                          <div className="flex flex-col gap-2">
-                            <div className="flex justify-between items-start">
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-white font-medium">{type.nom}</span>
-                                  {!isAvailable && (
-                                    <span className="text-red-400 text-xs">(Épuisé)</span>
-                                  )}
-                                  {type.stock <= 5 && isAvailable && (
-                                    <span className="text-orange-400 text-xs">(Plus que {type.stock})</span>
-                                  )}
-                                </div>
-                                {type.image_url && type.image_url !== '/images/default-ticket.png' && (
-                                  <img src={type.image_url} alt={type.nom} className="w-16 h-16 object-cover rounded-lg mt-1" />
-                                )}
-                              </div>
-                              <span className={`font-bold text-lg ${selectedType?.id === type.id ? 'text-yellow-400' : 'text-gray-400'}`}>
-                                {type.prix?.toLocaleString()} FCFA
-                              </span>
+            {/* ============================================================
+                AFFICHAGE DES TYPES DE TICKETS - AVEC FALLBACK IMAGES
+                ============================================================ */}
+            <div className="mb-6">
+              <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+                <Ticket className="w-5 h-5 text-yellow-400" />
+                Types de tickets disponibles
+                {loadingTypes && <Loader className="w-4 h-4 text-yellow-400 animate-spin ml-2" />}
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {event.types_tickets?.map((type) => {
+                  const isAvailable = type.stock > 0
+                  const isSelected = selectedType?.id === type.id
+                  const hasImageError = imageErrors[type.id]
+                  
+                  return (
+                    <button
+                      key={type.id}
+                      onClick={() => isAvailable && setSelectedType(type)}
+                      disabled={!isAvailable}
+                      className={`w-full text-left p-4 rounded-xl border-2 transition-all ${
+                        isSelected
+                          ? 'border-yellow-400 bg-yellow-400/10'
+                          : isAvailable
+                            ? 'border-gray-700 bg-gray-800 hover:border-gray-600 cursor-pointer'
+                            : 'border-gray-800 opacity-50 cursor-not-allowed bg-gray-900'
+                      }`}
+                    >
+                      <div className="flex flex-col gap-2">
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-white font-medium">{type.nom}</span>
+                              {!isAvailable && (
+                                <span className="text-red-400 text-xs">(Épuisé)</span>
+                              )}
+                              {type.stock <= 5 && isAvailable && (
+                                <span className="text-orange-400 text-xs">(Plus que {type.stock})</span>
+                              )}
                             </div>
-                            {type.description && (
-                              <p className="text-gray-400 text-xs">{type.description}</p>
+                            {/* ===== IMAGE DU TICKET AVEC FALLBACK ===== */}
+                            {type.image_url && type.image_url !== '/images/default-ticket.png' && !hasImageError ? (
+                              <div className="mt-1 relative">
+                                <img 
+                                  src={type.image_url} 
+                                  alt={type.nom}
+                                  className="w-16 h-16 object-cover rounded-lg"
+                                  onError={() => handleImageError(type.id)}
+                                  loading="lazy"
+                                />
+                              </div>
+                            ) : (
+                              <div className="mt-1 w-16 h-16 bg-gray-700 rounded-lg flex items-center justify-center">
+                                <ImageOff className="w-6 h-6 text-gray-500" />
+                              </div>
                             )}
-                            {type.avantages && (
-                              <p className="text-yellow-400 text-xs">✨ {type.avantages}</p>
-                            )}
-                            <p className="text-gray-500 text-xs">{type.stock} places disponibles</p>
                           </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
+                          <span className={`font-bold text-lg ${isSelected ? 'text-yellow-400' : 'text-gray-400'}`}>
+                            {type.prix?.toLocaleString()} FCFA
+                          </span>
+                        </div>
+                        {type.description && (
+                          <p className="text-gray-400 text-xs">{type.description}</p>
+                        )}
+                        {type.avantages && (
+                          <p className="text-yellow-400 text-xs">✨ {type.avantages}</p>
+                        )}
+                        <p className="text-gray-500 text-xs">{type.stock} places disponibles</p>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
 
-                {selectedType && (
+            {/* ============================================================
+                FORMULAIRE D'ACHAT - MASQUÉ POUR ORGANISATEUR ET ADMIN
+                ============================================================ */}
+            {showAchatForm ? (
+              <>
+                {step === 1 && selectedType && (
                   <div className="border-t border-gray-800 pt-6">
                     <div className="flex justify-between items-center mb-4">
                       <h3 className="text-white font-semibold">Acheter un ticket</h3>
@@ -648,10 +804,10 @@ const TicketDetail = () => {
                             value={formData.transactionId}
                             onChange={(e) => setFormData({ ...formData, transactionId: e.target.value })}
                             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-yellow-400 text-sm font-mono"
-                            placeholder="PP..."
+                            placeholder="PP111111.1111.11111111 ou PP111111111111111111"
                             required
                           />
-                          <p className="text-gray-500 text-[10px] mt-1">Sans espaces ni caractères spéciaux</p>
+                          <p className="text-gray-500 text-[10px] mt-1">Avec ou sans points</p>
                         </div>
                         <div>
                           <label className="text-gray-400 text-sm block mb-1">Numéro de dépôt *</label>
@@ -697,14 +853,31 @@ const TicketDetail = () => {
                     </form>
                   </div>
                 )}
+
+                {step === 2 && (
+                  <div className="text-center py-8">
+                    <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <CheckCircle className="w-8 h-8 text-green-400" />
+                    </div>
+                    <h2 className="text-2xl font-bold text-white mb-2">Paiement validé !</h2>
+                    <p className="text-gray-400 text-sm">Votre ticket est en cours de préparation...</p>
+                  </div>
+                )}
               </>
             ) : (
-              <div className="text-center py-8">
-                <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <CheckCircle className="w-8 h-8 text-green-400" />
+              <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 text-center">
+                <div className="flex items-center justify-center gap-3 mb-4">
+                  <Eye className="w-8 h-8 text-yellow-400" />
+                  <h3 className="text-white font-semibold text-lg">Mode consultation</h3>
                 </div>
-                <h2 className="text-2xl font-bold text-white mb-2">Paiement validé !</h2>
-                <p className="text-gray-400 text-sm">Votre ticket est en cours de téléchargement...</p>
+                <p className="text-gray-400 text-sm">
+                  Vous êtes connecté en tant que <strong className="text-yellow-400">{userRole}</strong>.
+                  <br />
+                  Les détails de l'événement sont affichés ci-dessus.
+                </p>
+                <p className="text-gray-500 text-xs mt-2">
+                  📌 Pour acheter un ticket, connectez-vous en tant que client.
+                </p>
               </div>
             )}
           </div>

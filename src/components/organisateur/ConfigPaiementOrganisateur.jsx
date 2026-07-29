@@ -1,7 +1,15 @@
 /**
  * Configuration Paiement - Organisateur
  * Règles NASA 1-10
- * Version corrigée - Suppression du champ Plan + Bouton Retour
+ * Version corrigée - Gestion des clés d'association et paiements clients
+ * CORRECTIONS :
+ * - La clé n'est plus générée automatiquement à la visualisation
+ * - Affichage "Aucune clé générée" si pas de clé
+ * - Bouton "Générer ma clé" pour créer la clé (1 seule fois pour Basique)
+ * - Bouton "Générer une nouvelle clé" pour Premium (désactive les anciennes)
+ * - Visualisation de la clé avec mot de passe (pas de régénération)
+ * - Affiche UNIQUEMENT les paiements des clients (paiements_clients)
+ * - Ajout manuel de paiement dans paiements_clients
  */
 
 import React, { useState, useEffect } from 'react'
@@ -11,7 +19,8 @@ import { useAuthContext } from '../../context/AuthContext'
 import { 
   DollarSign, Trash2, Edit, Search, Plus, Loader, RefreshCw,
   CheckCircle, XCircle, AlertCircle, Eye, EyeOff,
-  CreditCard, Smartphone, User, Phone, ArrowLeft
+  CreditCard, Smartphone, User, Phone, ArrowLeft,
+  Key, Copy, Shield, Lock, Crown, Zap
 } from 'lucide-react'
 
 const ConfigPaiementOrganisateur = () => {
@@ -36,6 +45,22 @@ const ConfigPaiementOrganisateur = () => {
     numero_depot: ''
   })
 
+  // ============================================================
+  // ÉTATS POUR LA CLÉ D'ASSOCIATION
+  // ============================================================
+  
+  const [cleAssociation, setCleAssociation] = useState('')
+  const [cleLoading, setCleLoading] = useState(false)
+  const [showCle, setShowCle] = useState(false)
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
+  const [passwordVerification, setPasswordVerification] = useState('')
+  const [passwordError, setPasswordError] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [cleExists, setCleExists] = useState(false)
+  const [cleId, setCleId] = useState(null)
+  const [planInfo, setPlanInfo] = useState({ nom: '', estPremium: false })
+  const [generating, setGenerating] = useState(false)
+
   // Configuration du format USSD de l'organisateur
   const [configUssd, setConfigUssd] = useState({
     type_compte: 'courant',
@@ -51,19 +76,223 @@ const ConfigPaiementOrganisateur = () => {
     if (user) {
       fetchPaiements()
       fetchConfigUssd()
+      fetchPlanInfo()
+      fetchCleAssociation()
     }
   }, [user])
+
+  // ============================================================
+  // RÉCUPÉRATION DU PLAN DE L'ORGANISATEUR
+  // ============================================================
+  
+  const fetchPlanInfo = async () => {
+    try {
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('plan_id')
+        .eq('id', user.id)
+        .single()
+
+      if (profileData && profileData.plan_id) {
+        setPlanInfo({
+          nom: profileData.plan_id,
+          estPremium: profileData.plan_id === 'Premium'
+        })
+      }
+    } catch (error) {
+      console.error('Erreur récupération plan:', error)
+    }
+  }
+
+  // ============================================================
+  // GESTION DE LA CLÉ D'ASSOCIATION
+  // ============================================================
+
+  const fetchCleAssociation = async () => {
+    try {
+      setCleLoading(true)
+      
+      const { data: existingCle, error: checkError } = await supabase
+        .from('association_tokens')
+        .select('id, token_cle, actif')
+        .eq('organisateur_id', user.id)
+        .eq('actif', true)
+        .maybeSingle()
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        throw checkError
+      }
+
+      if (existingCle) {
+        setCleAssociation(existingCle.token_cle)
+        setCleId(existingCle.id)
+        setCleExists(true)
+      } else {
+        setCleAssociation('')
+        setCleId(null)
+        setCleExists(false)
+      }
+
+    } catch (error) {
+      console.error('Erreur récupération clé:', error)
+      setError('Erreur lors de la récupération de la clé d\'association')
+    } finally {
+      setCleLoading(false)
+    }
+  }
+
+  const handleGenererCle = async () => {
+    setError('')
+    setSuccess('')
+    setGenerating(true)
+
+    try {
+      if (!planInfo.estPremium) {
+        const { count, error: countError } = await supabase
+          .from('association_tokens')
+          .select('*', { count: 'exact', head: true })
+          .eq('organisateur_id', user.id)
+
+        if (countError) throw countError
+
+        if (count > 0) {
+          setError('❌ Vous avez déjà généré votre clé. (Plan Basique : 1 clé maximum)')
+          setGenerating(false)
+          return
+        }
+      }
+
+      if (planInfo.estPremium) {
+        const { error: updateError } = await supabase
+          .from('association_tokens')
+          .update({ actif: false, updated_at: new Date().toISOString() })
+          .eq('organisateur_id', user.id)
+          .eq('actif', true)
+
+        if (updateError) {
+          console.error('Erreur désactivation anciennes clés:', updateError)
+        }
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('structure, nom_associe, plan_expire')
+        .eq('id', user.id)
+        .single()
+
+      if (profileError) throw profileError
+
+      const nom = profile.nom_associe || profile.structure || 'Organisateur'
+      const dateExpiration = profile.plan_expire ? new Date(profile.plan_expire) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+
+      const { data: cle, error: cleError } = await supabase.rpc(
+        'generer_cle_association',
+        {
+          p_organisateur_id: user.id,
+          p_nom: nom,
+          p_date_expiration: dateExpiration
+        }
+      )
+
+      if (cleError) throw cleError
+
+      setCleAssociation(cle)
+      setCleExists(true)
+      
+      const { data: newCle, error: newCleError } = await supabase
+        .from('association_tokens')
+        .select('id')
+        .eq('token_cle', cle)
+        .single()
+
+      if (!newCleError && newCle) {
+        setCleId(newCle.id)
+      }
+
+      if (planInfo.estPremium) {
+        setSuccess('✅ Nouvelle clé générée ! Les anciennes clés ont été désactivées.')
+      } else {
+        setSuccess('✅ Clé générée avec succès !')
+      }
+      
+      setTimeout(() => setSuccess(''), 3000)
+
+    } catch (error) {
+      console.error('Erreur génération clé:', error)
+      setError('Erreur lors de la génération de la clé: ' + (error.message || 'Veuillez réessayer'))
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const verifierMotDePasse = async (e) => {
+    e.preventDefault()
+    setPasswordError('')
+    
+    if (!passwordVerification || passwordVerification.length < 8) {
+      setPasswordError('Le mot de passe doit contenir au moins 8 caractères')
+      return
+    }
+
+    try {
+      const { data: { user: authUser }, error: signInError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: passwordVerification
+      })
+
+      if (signInError || !authUser) {
+        setPasswordError('Mot de passe incorrect')
+        return
+      }
+
+      setShowCle(true)
+      setPasswordModalOpen(false)
+      setPasswordVerification('')
+      setPasswordError('')
+      
+      await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: passwordVerification
+      })
+
+    } catch (error) {
+      setPasswordError('Erreur lors de la vérification')
+    }
+  }
+
+  const copyToClipboard = () => {
+    if (!cleAssociation) return
+    
+    navigator.clipboard?.writeText(cleAssociation)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 3000)
+  }
+
+  // ============================================================
+  // PAIEMENTS CLIENTS - CORRIGÉ
+  // ============================================================
 
   const fetchPaiements = async () => {
     try {
       setLoading(true)
+      
+      // ✅ Afficher UNIQUEMENT les paiements des clients (paiements_clients)
       const { data, error } = await supabase
-        .from('paiements_organisateurs')
+        .from('paiements_clients')
         .select('*')
         .eq('organisateur_id', user.id)
         .order('created_at', { ascending: false })
 
-      if (error) throw error
+      if (error) {
+        // Si la table n'existe pas encore, afficher un message
+        if (error.code === '42P01') {
+          setPaiements([])
+          setStats({ total: 0, enAttente: 0, valides: 0 })
+          setLoading(false)
+          return
+        }
+        throw error
+      }
 
       const paiementsData = data || []
       setPaiements(paiementsData)
@@ -75,6 +304,7 @@ const ConfigPaiementOrganisateur = () => {
       setStats({ total, enAttente, valides })
     } catch (error) {
       console.error('Erreur:', error)
+      setError('Erreur lors du chargement des paiements')
     } finally {
       setLoading(false)
     }
@@ -135,41 +365,9 @@ const ConfigPaiementOrganisateur = () => {
     }
   }
 
-  const handleDelete = async (id) => {
-    if (!confirm('Êtes-vous sûr de vouloir supprimer cette transaction ?')) return
-
-    try {
-      const { error } = await supabase
-        .from('paiements_organisateurs')
-        .delete()
-        .eq('id', id)
-        .eq('organisateur_id', user.id)
-
-      if (error) throw error
-      setSuccess('Transaction supprimée avec succès')
-      await fetchPaiements()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (error) {
-      setError('Erreur lors de la suppression')
-    }
-  }
-
-  const handleStatusChange = async (id, statut) => {
-    try {
-      const { error } = await supabase
-        .from('paiements_organisateurs')
-        .update({ statut, updated_at: new Date().toISOString() })
-        .eq('id', id)
-        .eq('organisateur_id', user.id)
-
-      if (error) throw error
-      setSuccess(`Statut changé en ${statut === 'valide' ? 'Validé' : 'En attente'}`)
-      await fetchPaiements()
-      setTimeout(() => setSuccess(''), 3000)
-    } catch (error) {
-      setError('Erreur lors du changement de statut')
-    }
-  }
+  // ============================================================
+  // AJOUT MANUEL D'UN PAIEMENT CLIENT - DANS paiements_clients
+  // ============================================================
 
   const handleAddPaiement = async (e) => {
     e.preventDefault()
@@ -194,29 +392,83 @@ const ConfigPaiementOrganisateur = () => {
     }
 
     try {
+      // ✅ Insertion dans paiements_clients (pas paiements_organisateurs)
       const { error } = await supabase
-        .from('paiements_organisateurs')
+        .from('paiements_clients')
         .insert([{
           organisateur_id: user.id,
           transaction_id: newPaiement.transaction_id.trim(),
           montant: parseInt(newPaiement.montant),
           numero_depot: newPaiement.numero_depot.trim(),
-          statut: 'en_attente'
+          statut: 'en_attente',
+          source: 'manuel'
         }])
 
       if (error) throw error
 
-      setSuccess('Transaction ajoutée avec succès')
+      setSuccess('✅ Paiement client ajouté avec succès')
       setShowAddModal(false)
       setNewPaiement({ transaction_id: '', montant: '', numero_depot: '' })
       await fetchPaiements()
       setTimeout(() => setSuccess(''), 3000)
     } catch (error) {
-      setError('Erreur lors de l\'ajout')
+      console.error('Erreur:', error)
+      setError('Erreur lors de l\'ajout: ' + (error.message || 'Veuillez réessayer'))
     } finally {
       setSubmitting(false)
     }
   }
+
+  // ============================================================
+  // SUPPRESSION D'UN PAIEMENT CLIENT
+  // ============================================================
+
+  const handleDelete = async (id) => {
+    if (!confirm('Êtes-vous sûr de vouloir supprimer ce paiement client ?')) return
+
+    try {
+      const { error } = await supabase
+        .from('paiements_clients')
+        .delete()
+        .eq('id', id)
+        .eq('organisateur_id', user.id)
+
+      if (error) throw error
+      setSuccess('✅ Paiement client supprimé avec succès')
+      await fetchPaiements()
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (error) {
+      setError('Erreur lors de la suppression')
+    }
+  }
+
+  // ============================================================
+  // CHANGEMENT DE STATUT D'UN PAIEMENT CLIENT
+  // ============================================================
+
+  const handleStatusChange = async (id, statut) => {
+    try {
+      const { error } = await supabase
+        .from('paiements_clients')
+        .update({ 
+          statut, 
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', id)
+        .eq('organisateur_id', user.id)
+
+      if (error) throw error
+      setSuccess(`✅ Statut changé en ${statut === 'valide' ? 'Validé' : 'En attente'}`)
+      await fetchPaiements()
+      setTimeout(() => setSuccess(''), 3000)
+    } catch (error) {
+      setError('Erreur lors du changement de statut')
+    }
+  }
+
+  // ============================================================
+  // UTILITAIRES
+  // ============================================================
 
   const getUssdFormat = () => {
     if (!configUssd.phone_om) return 'Configuration incomplète'
@@ -235,8 +487,10 @@ const ConfigPaiementOrganisateur = () => {
 
   const getStatusBadge = (statut) => {
     const config = {
-      'valide': { color: 'bg-green-500/20 text-green-400', label: 'Validé', icon: <CheckCircle className="w-3 h-3" /> },
-      'en_attente': { color: 'bg-yellow-500/20 text-yellow-400', label: 'En attente', icon: <AlertCircle className="w-3 h-3" /> }
+      'valide': { color: 'bg-green-500/20 text-green-400', label: '✅ Validé', icon: <CheckCircle className="w-3 h-3" /> },
+      'en_attente': { color: 'bg-yellow-500/20 text-yellow-400', label: '⏳ En attente', icon: <AlertCircle className="w-3 h-3" /> },
+      'rejete': { color: 'bg-red-500/20 text-red-400', label: '❌ Rejeté', icon: <XCircle className="w-3 h-3" /> },
+      'double': { color: 'bg-orange-500/20 text-orange-400', label: '🔄 Doublon', icon: <AlertCircle className="w-3 h-3" /> }
     }
     const c = config[statut] || config['en_attente']
     return (
@@ -282,7 +536,230 @@ const ConfigPaiementOrganisateur = () => {
         Retour au dashboard
       </button>
 
-      {/* ===== CONFIGURATION USSD ===== */}
+      {/* ============================================================
+          SECTION CLÉ D'ASSOCIATION
+          ============================================================ */}
+      <div className="bg-gray-900 rounded-xl border border-yellow-400/30 overflow-hidden shadow-lg shadow-yellow-400/5">
+        <div className="p-4 md:p-6 border-b border-yellow-400/20 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <Shield className="w-5 h-5 text-yellow-400" />
+            <h2 className="text-white font-semibold">🔑 Clé d'association Gateway</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            {planInfo.estPremium ? (
+              <span className="text-yellow-400 text-xs font-medium flex items-center gap-1">
+                <Crown className="w-3 h-3" />
+                Premium
+              </span>
+            ) : (
+              <span className="text-gray-500 text-xs">Basique</span>
+            )}
+            <span className="text-gray-500 text-xs">
+              {cleExists ? '✅ Clé générée' : '⏳ Aucune clé'}
+            </span>
+          </div>
+        </div>
+
+        <div className="p-4 md:p-6">
+          <div className="bg-gray-800/50 rounded-lg p-3 mb-4 border border-gray-700">
+            <p className="text-gray-300 text-sm">
+              Utilisez cette clé pour connecter votre application mobile <strong className="text-yellow-400">FASO TICKET Gateway</strong> à votre compte organisateur.
+            </p>
+            <p className="text-gray-400 text-xs mt-1">
+              📱 Cette clé est unique et liée à votre compte. Ne la partagez pas.
+            </p>
+            {!planInfo.estPremium && (
+              <div className="mt-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-2">
+                <p className="text-yellow-400 text-xs flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  Plan Basique : 1 clé maximum
+                </p>
+              </div>
+            )}
+            {planInfo.estPremium && (
+              <div className="mt-2 bg-green-500/10 border border-green-500/20 rounded-lg p-2">
+                <p className="text-green-400 text-xs flex items-center gap-1">
+                  <CheckCircle className="w-3 h-3" />
+                  Plan Premium : Génération illimitée de clés
+                </p>
+              </div>
+            )}
+          </div>
+
+          {cleLoading ? (
+            <div className="flex justify-center py-4">
+              <Loader className="w-6 h-6 text-yellow-400 animate-spin" />
+            </div>
+          ) : cleExists ? (
+            <div>
+              {showCle ? (
+                <div className="flex flex-col sm:flex-row items-center gap-3 bg-gray-800 rounded-lg p-4 border border-gray-700">
+                  <div className="flex-1 w-full">
+                    <p className="text-gray-400 text-xs mb-1">Votre clé d'association :</p>
+                    <code className="text-yellow-400 text-sm md:text-base font-mono break-all bg-black/50 px-3 py-2 rounded block">
+                      {cleAssociation}
+                    </code>
+                  </div>
+                  <div className="flex gap-2 flex-shrink-0">
+                    <button
+                      onClick={copyToClipboard}
+                      className="flex items-center gap-2 bg-yellow-400 hover:bg-yellow-300 text-black px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+                    >
+                      <Copy className="w-4 h-4" />
+                      {copied ? 'Copié !' : 'Copier'}
+                    </button>
+                    <button
+                      onClick={() => setShowCle(false)}
+                      className="bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors"
+                    >
+                      <EyeOff className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col sm:flex-row items-center gap-4 bg-gray-800 rounded-lg p-4 border border-gray-700">
+                  <div className="flex-1 text-center sm:text-left">
+                    <Lock className="w-5 h-5 text-yellow-400 inline mr-2" />
+                    <span className="text-gray-300 text-sm">
+                      La clé est masquée pour des raisons de sécurité.
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setPasswordModalOpen(true)}
+                    className="flex items-center gap-2 bg-yellow-400 hover:bg-yellow-300 text-black px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+                  >
+                    <Eye className="w-4 h-4" />
+                    Voir la clé
+                  </button>
+                </div>
+              )}
+
+              <div className="mt-4 flex justify-center">
+                {planInfo.estPremium ? (
+                  <button
+                    onClick={handleGenererCle}
+                    disabled={generating}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium disabled:opacity-50"
+                  >
+                    {generating ? (
+                      <Loader className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Zap className="w-4 h-4" />
+                    )}
+                    {generating ? 'Génération...' : 'Générer une nouvelle clé'}
+                  </button>
+                ) : (
+                  <div className="text-gray-500 text-xs">
+                    <AlertCircle className="w-4 h-4 inline mr-1" />
+                    Plan Basique : 1 clé maximum déjà générée
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700 text-center">
+              <Key className="w-12 h-12 text-gray-500 mx-auto mb-3 opacity-50" />
+              <p className="text-gray-400 text-sm mb-2">Aucune clé générée</p>
+              <p className="text-gray-500 text-xs mb-4">
+                Cliquez sur le bouton ci-dessous pour générer votre clé d'association
+              </p>
+              <button
+                onClick={handleGenererCle}
+                disabled={generating || (!planInfo.estPremium && cleExists)}
+                className={`flex items-center gap-2 mx-auto px-6 py-2.5 rounded-lg transition-colors text-sm font-medium ${
+                  generating || (!planInfo.estPremium && cleExists)
+                    ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                    : 'bg-yellow-400 hover:bg-yellow-300 text-black'
+                }`}
+              >
+                {generating ? (
+                  <Loader className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Key className="w-4 h-4" />
+                )}
+                {generating ? 'Génération...' : 'Générer ma clé'}
+              </button>
+              {!planInfo.estPremium && (
+                <p className="text-gray-500 text-xs mt-2">
+                  ⚠️ Une seule clé peut être générée avec le plan Basique
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ===== MODAL DE VÉRIFICATION DU MOT DE PASSE ===== */}
+      {passwordModalOpen && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 rounded-2xl p-6 max-w-md w-full border border-gray-800">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-white font-semibold text-lg">🔐 Vérification de sécurité</h3>
+              <button
+                onClick={() => {
+                  setPasswordModalOpen(false)
+                  setPasswordVerification('')
+                  setPasswordError('')
+                }}
+                className="text-gray-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-gray-300 text-sm mb-4">
+              Veuillez entrer votre mot de passe pour afficher votre clé d'association.
+              <br />
+              <span className="text-gray-500 text-xs">(La clé ne sera pas régénérée)</span>
+            </p>
+
+            <form onSubmit={verifierMotDePasse} className="space-y-4">
+              <div>
+                <label className="text-gray-400 text-sm block mb-1">Mot de passe</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <input
+                    type="password"
+                    value={passwordVerification}
+                    onChange={(e) => setPasswordVerification(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-yellow-400 text-sm"
+                    placeholder="Entrez votre mot de passe"
+                    required
+                    autoFocus
+                  />
+                </div>
+                {passwordError && (
+                  <p className="text-red-400 text-xs mt-1">{passwordError}</p>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPasswordModalOpen(false)
+                    setPasswordVerification('')
+                    setPasswordError('')
+                  }}
+                  className="flex-1 bg-gray-800 hover:bg-gray-700 text-white py-2 rounded-lg transition-colors"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-black font-semibold py-2 rounded-lg transition-colors"
+                >
+                  Vérifier
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================
+          CONFIGURATION USSD
+          ============================================================ */}
       <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
         <div className="p-4 md:p-6 border-b border-gray-800 flex justify-between items-center">
           <div className="flex items-center gap-2">
@@ -451,13 +928,15 @@ const ConfigPaiementOrganisateur = () => {
         </div>
       </div>
 
-      {/* ===== LISTE DES TRANSACTIONS ===== */}
+      {/* ============================================================
+          PAIEMENTS CLIENTS - CORRIGÉ
+          ============================================================ */}
       <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
         <div className="p-4 md:p-6 border-b border-gray-800">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div className="flex items-center gap-2">
               <DollarSign className="w-5 h-5 text-yellow-400" />
-              <h2 className="text-white font-semibold">Mes transactions clients</h2>
+              <h2 className="text-white font-semibold">Paiements clients</h2>
               <span className="text-gray-400 text-sm">({stats.total})</span>
             </div>
             <button
@@ -503,6 +982,7 @@ const ConfigPaiementOrganisateur = () => {
               <option value="tous">Tous</option>
               <option value="en_attente">En attente</option>
               <option value="valide">Validés</option>
+              <option value="rejete">Rejetés</option>
             </select>
             <button
               onClick={fetchPaiements}
@@ -519,7 +999,8 @@ const ConfigPaiementOrganisateur = () => {
         {filteredPaiements.length === 0 ? (
           <div className="p-8 text-center text-gray-400">
             <DollarSign className="w-12 h-12 mx-auto mb-2 opacity-30" />
-            <p>Aucune transaction trouvée</p>
+            <p>Aucun paiement client trouvé</p>
+            <p className="text-sm text-gray-500">Les paiements de vos clients apparaîtront ici</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -596,12 +1077,12 @@ const ConfigPaiementOrganisateur = () => {
         )}
       </div>
 
-      {/* ===== MODAL AJOUT ===== */}
+      {/* ===== MODAL AJOUT PAIEMENT CLIENT ===== */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 rounded-2xl p-6 max-w-lg w-full border border-gray-800">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-white font-semibold text-lg">Ajouter une transaction client</h3>
+              <h3 className="text-white font-semibold text-lg">Ajouter un paiement client</h3>
               <button
                 onClick={() => setShowAddModal(false)}
                 className="text-gray-400 hover:text-white"
@@ -673,7 +1154,7 @@ const ConfigPaiementOrganisateur = () => {
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 rounded-2xl p-6 max-w-md w-full border border-gray-800">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-white font-semibold text-lg">Détails de la transaction</h3>
+              <h3 className="text-white font-semibold text-lg">Détails du paiement client</h3>
               <button
                 onClick={() => setShowDetailsModal(false)}
                 className="text-gray-400 hover:text-white"
@@ -698,6 +1179,10 @@ const ConfigPaiementOrganisateur = () => {
               <div>
                 <p className="text-gray-400 text-xs">Statut</p>
                 <p>{getStatusBadge(selectedPaiement.statut)}</p>
+              </div>
+              <div>
+                <p className="text-gray-400 text-xs">Source</p>
+                <p className="text-white capitalize">{selectedPaiement.source || 'manuel'}</p>
               </div>
               <div>
                 <p className="text-gray-400 text-xs">Date de création</p>

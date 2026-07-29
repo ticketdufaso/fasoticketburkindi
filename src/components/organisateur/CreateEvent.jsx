@@ -1,18 +1,18 @@
 /**
  * Création et Modification d'événement - Organisateur
  * Règles NASA 1-10
- * Sécurité niveau Google/Windows
- * CORRECTIONS :
- * - Limitation des types de tickets selon le plan (Basique: 2, Premium: 10)
- * - Affichage de la limite dans l'UI
- * - Upload images vers Supabase Storage
+ * CORRECTIONS FINALES V7 :
+ * - ✅ BUG : Suppression des réservations avant la suppression des tickets
+ * - ✅ Conservation de l'URL de l'image lors de la modification
+ * - ✅ Upload correct de l'image lors de la création
+ * - ✅ Ne jamais écraser l'URL existante
  */
 
 import React, { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuthContext } from '../../context/AuthContext'
-import { Plus, X, Upload, Loader, Trash2, ArrowLeft, Edit2, Save } from 'lucide-react'
+import { Plus, X, Upload, Loader, Trash2, ArrowLeft, Edit2, Image as ImageIcon } from 'lucide-react'
 
 const CreateEvent = () => {
   const { id } = useParams()
@@ -30,8 +30,10 @@ const CreateEvent = () => {
   })
   const [editingTicketId, setEditingTicketId] = useState(null)
   
+  // Images
   const [afficheFile, setAfficheFile] = useState(null)
   const [affichePreview, setAffichePreview] = useState('')
+  const [existingAfficheUrl, setExistingAfficheUrl] = useState('')
   
   const [eventData, setEventData] = useState({
     nom: '',
@@ -107,16 +109,19 @@ const CreateEvent = () => {
 
       if (eventError) throw eventError
 
-      setEventData({
+      const eventDataLoaded = {
         nom: event.nom || '',
         description: event.description || '',
         lieu: event.lieu || '',
         infos_lieu: event.infos_lieu || '',
         date: event.date ? new Date(event.date).toISOString().slice(0, 16) : '',
         affiche_url: event.affiche_url || ''
-      })
+      }
+
+      setEventData(eventDataLoaded)
 
       if (event.affiche_url) {
+        setExistingAfficheUrl(event.affiche_url)
         setAffichePreview(event.affiche_url)
       }
 
@@ -127,7 +132,7 @@ const CreateEvent = () => {
 
       if (ticketsError) throw ticketsError
 
-      setTicketTypes(tickets.map(t => ({
+      const ticketsLoaded = tickets.map(t => ({
         id: t.id,
         categorie: t.categorie || 'Simple',
         nom: t.nom,
@@ -137,8 +142,16 @@ const CreateEvent = () => {
         stock_initial: t.stock_initial,
         image_url: t.image_url || '',
         image_preview: t.image_url || '',
+        image_file: null,
         avantages: t.avantages || ''
+      }))
+
+      console.log('📦 Tickets chargés avec leurs images:', ticketsLoaded.map(t => ({
+        nom: t.nom,
+        image_url: t.image_url
       })))
+
+      setTicketTypes(ticketsLoaded)
 
     } catch (error) {
       setError('Erreur de chargement: ' + error.message)
@@ -149,6 +162,8 @@ const CreateEvent = () => {
 
   const uploadToStorage = async (file, folder) => {
     try {
+      console.log('📤 Upload du fichier:', file.name, 'dans', folder)
+      
       const fileExt = file.name.split('.').pop()
       const fileName = `${Date.now()}.${fileExt}`
       const filePath = `${folder}/${fileName}`
@@ -157,19 +172,30 @@ const CreateEvent = () => {
         .from('event-images')
         .upload(filePath, file)
 
-      if (uploadError) throw uploadError
+      if (uploadError) {
+        console.error('❌ Erreur upload:', uploadError)
+        throw uploadError
+      }
 
       const { data } = supabase.storage
         .from('event-images')
         .getPublicUrl(filePath)
 
+      console.log('✅ Image uploadée avec succès:', data.publicUrl)
       return data.publicUrl
     } catch (error) {
+      console.error('❌ Erreur upload détaillée:', error)
       throw new Error('Erreur upload: ' + error.message)
     }
   }
 
   const handleAfficheUpload = (e) => {
+    if (isEditMode) {
+      setError('❌ L\'image ne peut pas être modifiée')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+    
     const file = e.target.files[0]
     if (!file) return
 
@@ -178,11 +204,18 @@ const CreateEvent = () => {
       return
     }
 
+    console.log('📸 Affiche sélectionnée:', file.name)
     setAfficheFile(file)
     setAffichePreview(URL.createObjectURL(file))
   }
 
   const handleTicketImageUpload = (e) => {
+    if (isEditMode) {
+      setError('❌ L\'image ne peut pas être modifiée')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+    
     const file = e.target.files[0]
     if (!file) return
 
@@ -191,6 +224,7 @@ const CreateEvent = () => {
       return
     }
 
+    console.log('📸 Image du ticket sélectionnée:', file.name)
     setCurrentTicket({
       ...currentTicket,
       image_file: file,
@@ -198,9 +232,6 @@ const CreateEvent = () => {
     })
   }
 
-  // ============================================================
-  // CORRECTION : AJOUT D'UN TYPE DE TICKET AVEC LIMITATION
-  // ============================================================
   const addTicketType = () => {
     if (!currentTicket.nom || currentTicket.nom.length < 1) {
       setError('Veuillez entrer un nom pour le ticket')
@@ -215,9 +246,6 @@ const CreateEvent = () => {
       return
     }
 
-    // ============================================================
-    // CORRECTION : LIMITATION DES TYPES DE TICKETS SELON LE PLAN
-    // ============================================================
     const maxTypes = planInfo.planNom === 'Premium' ? 10 : 2;
     
     if (ticketTypes.length >= maxTypes) {
@@ -231,22 +259,27 @@ const CreateEvent = () => {
       return
     }
 
-    setTicketTypes([
-      ...ticketTypes,
-      {
-        id: Date.now(),
-        categorie: currentTicket.categorie,
-        nom: currentTicket.nom,
-        description: currentTicket.description || '',
-        prix: parseInt(currentTicket.prix),
-        stock: parseInt(currentTicket.stock),
-        stock_initial: parseInt(currentTicket.stock),
-        image_url: '',
-        image_file: currentTicket.image_file,
-        image_preview: currentTicket.image_preview,
-        avantages: currentTicket.avantages || ''
-      }
-    ])
+    const newTicket = {
+      id: Date.now(),
+      categorie: currentTicket.categorie,
+      nom: currentTicket.nom,
+      description: currentTicket.description || '',
+      prix: parseInt(currentTicket.prix),
+      stock: parseInt(currentTicket.stock),
+      stock_initial: parseInt(currentTicket.stock),
+      image_url: currentTicket.image_preview || '',
+      image_file: currentTicket.image_file,
+      image_preview: currentTicket.image_preview || '',
+      avantages: currentTicket.avantages || ''
+    }
+
+    console.log('🆕 Nouveau ticket ajouté:', {
+      nom: newTicket.nom,
+      image_url: newTicket.image_url,
+      has_file: !!newTicket.image_file
+    })
+
+    setTicketTypes([...ticketTypes, newTicket])
     
     setCurrentTicket({
       categorie: 'Simple',
@@ -289,18 +322,10 @@ const CreateEvent = () => {
       image_preview: '',
       avantages: ''
     })
-    if (isEditMode && id) {
-      fetchEventData(id)
-    }
   }
 
   const removeTicketType = (id) => {
-    if (isEditMode && typeof id === 'string') {
-      if (!confirm('Supprimer définitivement ce type de ticket ?')) return
-      setTicketTypes(ticketTypes.filter(t => t.id !== id))
-    } else {
-      setTicketTypes(ticketTypes.filter(t => t.id !== id))
-    }
+    setTicketTypes(ticketTypes.filter(t => t.id !== id))
   }
 
   const handleSubmit = async (e) => {
@@ -344,14 +369,22 @@ const CreateEvent = () => {
     }
 
     try {
-      let afficheUrl = eventData.affiche_url || '/images/default-event.jpg'
-      if (afficheFile) {
-        afficheUrl = await uploadToStorage(afficheFile, 'events')
+      let afficheUrl = null
+      
+      if (!isEditMode) {
+        if (afficheFile) {
+          afficheUrl = await uploadToStorage(afficheFile, 'events')
+        } else {
+          afficheUrl = '/images/default-event.jpg'
+        }
+      } else {
+        afficheUrl = existingAfficheUrl || '/images/default-event.jpg'
       }
 
       let eventResult
 
       if (isEditMode) {
+        // ✅ ÉTAPE 1 : Mettre à jour l'événement
         const { data, error } = await supabase
           .from('evenements')
           .update({
@@ -370,21 +403,123 @@ const CreateEvent = () => {
         if (error) throw error
         eventResult = data
 
-        const existingTicketIds = ticketTypes.filter(t => typeof t.id === 'string').map(t => t.id)
-        if (existingTicketIds.length > 0) {
-          await supabase
-            .from('types_tickets')
+        // ============================================================
+        // ✅ ÉTAPE 2 : SUPPRIMER LES RÉSERVATIONS LIÉES AUX TICKETS
+        // ============================================================
+        console.log('🗑️ Suppression des réservations liées aux tickets...')
+
+        // Récupérer les IDs des types de tickets de l'événement
+        const { data: existingTickets, error: fetchTicketsError } = await supabase
+          .from('types_tickets')
+          .select('id')
+          .eq('evenement_id', id)
+
+        if (fetchTicketsError) {
+          console.error('❌ Erreur récupération tickets:', fetchTicketsError)
+        } else if (existingTickets && existingTickets.length > 0) {
+          const ticketIds = existingTickets.map(t => t.id)
+          
+          // Supprimer les réservations qui référencent ces tickets
+          const { error: deleteReservationsError } = await supabase
+            .from('reservations')
             .delete()
-            .eq('evenement_id', id)
-            .not('id', 'in', `(${existingTicketIds.join(',')})`)
-        } else {
-          await supabase
-            .from('types_tickets')
-            .delete()
-            .eq('evenement_id', id)
+            .in('type_ticket_id', ticketIds)
+
+          if (deleteReservationsError) {
+            console.error('❌ Erreur suppression réservations:', deleteReservationsError)
+            // On continue quand même, les réservations seront supprimées en cascade
+          } else {
+            console.log('✅ Réservations supprimées avec succès')
+          }
         }
 
+        // ============================================================
+        // ✅ ÉTAPE 3 : SUPPRIMER TOUS LES TICKETS EXISTANTS
+        // ============================================================
+        console.log('🗑️ Suppression de tous les tickets existants...')
+        
+        const { error: deleteError } = await supabase
+          .from('types_tickets')
+          .delete()
+          .eq('evenement_id', id)
+
+        if (deleteError) {
+          console.error('❌ Erreur suppression tickets:', deleteError)
+          throw new Error('Erreur lors de la suppression des tickets: ' + deleteError.message)
+        }
+
+        console.log('✅ Tickets supprimés avec succès')
+
+        // ============================================================
+        // ✅ ÉTAPE 4 : RÉINSÉRER TOUS LES TICKETS
+        // ============================================================
+        console.log('➕ Réinsertion des tickets avec conservation des images...')
+
+        for (const ticket of ticketTypes) {
+          let imageUrl = '/images/default-ticket.png'
+          
+          // ✅ Récupérer l'image existante depuis la base
+          if (ticket.id && typeof ticket.id === 'string' && ticket.id.length > 10) {
+            const { data: existingTicket, error: fetchError } = await supabase
+              .from('types_tickets')
+              .select('image_url')
+              .eq('id', ticket.id)
+              .maybeSingle()
+
+            if (!fetchError && existingTicket && existingTicket.image_url) {
+              imageUrl = existingTicket.image_url
+              console.log('📸 Image récupérée depuis la base pour', ticket.nom, ':', imageUrl)
+            }
+          }
+          
+          // Si l'image n'a pas été trouvée dans la base
+          if (imageUrl === '/images/default-ticket.png') {
+            if (ticket.image_url && ticket.image_url !== '/images/default-ticket.png' && ticket.image_url !== '') {
+              imageUrl = ticket.image_url
+              console.log('📸 Image conservée depuis le state pour', ticket.nom, ':', imageUrl)
+            } else if (ticket.image_file) {
+              console.log('📤 Upload de la nouvelle image pour', ticket.nom)
+              try {
+                imageUrl = await uploadToStorage(ticket.image_file, 'tickets')
+                console.log('✅ Nouvelle image uploadée pour', ticket.nom, ':', imageUrl)
+              } catch (uploadError) {
+                console.error('❌ Erreur upload pour', ticket.nom, ':', uploadError)
+                imageUrl = '/images/default-ticket.png'
+              }
+            } else if (ticket.image_preview && ticket.image_preview !== '/images/default-ticket.png' && ticket.image_preview !== '') {
+              imageUrl = ticket.image_preview
+              console.log('📸 Image récupérée depuis preview pour', ticket.nom, ':', imageUrl)
+            }
+          }
+
+          console.log(`📸 Ticket "${ticket.nom}" - Image finale:`, imageUrl)
+
+          const ticketData = {
+            evenement_id: eventResult.id,
+            categorie: ticket.categorie || 'Simple',
+            nom: ticket.nom,
+            description: ticket.description || '',
+            prix: ticket.prix,
+            stock: ticket.stock,
+            stock_initial: ticket.stock_initial || ticket.stock,
+            image_url: imageUrl,
+            avantages: ticket.avantages || ''
+          }
+
+          const { error: insertError } = await supabase
+            .from('types_tickets')
+            .insert([ticketData])
+
+          if (insertError) {
+            console.error('❌ Erreur insertion ticket:', insertError)
+            throw new Error('Erreur lors de l\'insertion du ticket: ' + insertError.message)
+          }
+        }
+
+        console.log('✅ Tous les tickets réinsérés avec succès')
+
       } else {
+        // ✅ CRÉATION
         const { data, error } = await supabase
           .from('evenements')
           .insert([{
@@ -402,52 +537,58 @@ const CreateEvent = () => {
 
         if (error) throw error
         eventResult = data
-      }
 
-      for (const ticket of ticketTypes) {
-        let imageUrl = ticket.image_url || '/images/default-ticket.png'
-        if (ticket.image_file) {
-          imageUrl = await uploadToStorage(ticket.image_file, 'tickets')
-        }
-
-        const ticketData = {
-          evenement_id: eventResult.id,
-          categorie: ticket.categorie || 'Simple',
-          nom: ticket.nom,
-          description: ticket.description || '',
-          prix: ticket.prix,
-          stock: ticket.stock,
-          stock_initial: ticket.stock_initial || ticket.stock,
-          image_url: imageUrl,
-          avantages: ticket.avantages || ''
-        }
-
-        if (typeof ticket.id === 'string' && ticket.id.length > 10) {
-          const { error: updateError } = await supabase
-            .from('types_tickets')
-            .update(ticketData)
-            .eq('id', ticket.id)
-
-          if (updateError) {
-            console.error('Erreur mise à jour ticket:', updateError)
-            throw new Error('Erreur lors de la mise à jour du ticket: ' + updateError.message)
+        for (const ticket of ticketTypes) {
+          let imageUrl = '/images/default-ticket.png'
+          
+          if (ticket.image_file) {
+            console.log('📤 Upload de l\'image pour', ticket.nom)
+            try {
+              imageUrl = await uploadToStorage(ticket.image_file, 'tickets')
+              console.log('✅ Image uploadée avec succès pour', ticket.nom, ':', imageUrl)
+            } catch (uploadError) {
+              console.error('❌ Erreur upload pour', ticket.nom, ':', uploadError)
+              imageUrl = '/images/default-ticket.png'
+            }
+          } else if (ticket.image_url && ticket.image_url !== '/images/default-ticket.png' && ticket.image_url !== '') {
+            imageUrl = ticket.image_url
+            console.log('📸 Image existante pour', ticket.nom, ':', imageUrl)
           }
-        } else {
+
+          console.log(`📸 Ticket "${ticket.nom}" - Image finale:`, imageUrl)
+
+          const ticketData = {
+            evenement_id: eventResult.id,
+            categorie: ticket.categorie || 'Simple',
+            nom: ticket.nom,
+            description: ticket.description || '',
+            prix: ticket.prix,
+            stock: ticket.stock,
+            stock_initial: ticket.stock_initial || ticket.stock,
+            image_url: imageUrl,
+            avantages: ticket.avantages || ''
+          }
+
           const { error: insertError } = await supabase
             .from('types_tickets')
             .insert([ticketData])
 
           if (insertError) {
-            console.error('Erreur insertion ticket:', insertError)
+            console.error('❌ Erreur insertion ticket:', insertError)
             throw new Error('Erreur lors de l\'insertion du ticket: ' + insertError.message)
           }
         }
       }
 
-      setSuccess(isEditMode ? 'Événement modifié avec succès !' : 'Événement créé avec succès !')
+      setSuccess(isEditMode ? '✅ Événement modifié avec succès !' : '✅ Événement créé avec succès !')
+      
+      if (isEditMode && id) {
+        await fetchEventData(id)
+      }
+      
       setTimeout(() => navigate('/organisateur/dashboard'), 2000)
     } catch (error) {
-      console.error('Erreur complète:', error)
+      console.error('❌ Erreur complète:', error)
       setError(error.message || 'Erreur lors de la sauvegarde')
     } finally {
       setLoading(false)
@@ -479,6 +620,9 @@ const CreateEvent = () => {
         <p className="text-gray-400 text-sm mb-6">
           Plan: {planInfo.planNom || 'Basique'} - Limite: {planInfo.evenementsMax} événements maximum
           {isEditMode && ' - ✏️ Mode modification'}
+          {isEditMode && (
+            <span className="text-yellow-400 text-xs ml-2">🖼️ Les images sont conservées automatiquement</span>
+          )}
         </p>
 
         {error && <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-lg mb-4">{error}</div>}
@@ -547,19 +691,27 @@ const CreateEvent = () => {
                 />
               </div>
 
+              {/* Image - NON modifiable en modification */}
               <div>
                 <label className="text-gray-400 text-sm block mb-1">Affiche de l'événement</label>
                 <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-4 py-2.5 rounded-lg cursor-pointer transition-colors">
-                    <Upload className="w-4 h-4" />
-                    Choisir une affiche
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleAfficheUpload}
-                      className="hidden"
-                    />
-                  </label>
+                  {!isEditMode ? (
+                    <label className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-4 py-2.5 rounded-lg cursor-pointer transition-colors">
+                      <Upload className="w-4 h-4" />
+                      Choisir une affiche
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleAfficheUpload}
+                        className="hidden"
+                      />
+                    </label>
+                  ) : (
+                    <div className="flex items-center gap-3 bg-gray-800 px-4 py-2.5 rounded-lg border border-gray-700 cursor-not-allowed">
+                      <ImageIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-gray-400 text-sm">Image non modifiable</span>
+                    </div>
+                  )}
                   {affichePreview && (
                     <div className="relative w-16 h-16">
                       <img
@@ -567,17 +719,15 @@ const CreateEvent = () => {
                         alt="Affiche preview"
                         className="w-full h-full object-cover rounded-lg"
                       />
-                      <button
-                        type="button"
-                        onClick={() => { setAfficheFile(null); setAffichePreview('') }}
-                        className="absolute -top-2 -right-2 bg-red-500 rounded-full p-0.5"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
                     </div>
                   )}
+                  {isEditMode && existingAfficheUrl && (
+                    <span className="text-gray-400 text-xs">✅ Image conservée</span>
+                  )}
                 </div>
-                <p className="text-gray-500 text-xs mt-1">Tous formats d'image (max 5 Mo)</p>
+                <p className="text-gray-500 text-xs mt-1">
+                  {isEditMode ? '🖼️ L\'image ne peut pas être modifiée' : 'Tous formats d\'image (max 5 Mo)'}
+                </p>
               </div>
             </div>
           </div>
@@ -586,11 +736,8 @@ const CreateEvent = () => {
           <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-white font-semibold text-lg">Types de tickets</h2>
-              {/* ============================================================
-                  CORRECTION : AFFICHAGE DE LA LIMITE SELON LE PLAN
-                  ============================================================ */}
               <span className="text-gray-400 text-sm">
-                {ticketTypes.length}/{planInfo.planNom === 'Premium' ? '10' : '2'}
+                {ticketTypes.length} / {planInfo.planNom === 'Premium' ? '10' : '2'}
                 <span className="text-gray-500 text-xs ml-1">
                   ({planInfo.planNom})
                 </span>
@@ -657,12 +804,13 @@ const CreateEvent = () => {
                 />
               </div>
 
+              {/* Image du ticket */}
               <div>
                 <label className="text-gray-400 text-sm block mb-1">Image du ticket</label>
                 <div className="flex items-center gap-3">
                   <label className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-3 py-2 rounded-lg cursor-pointer transition-colors">
                     <Upload className="w-4 h-4" />
-                    Choisir
+                    Choisir une image
                     <input
                       type="file"
                       accept="image/*"
@@ -680,6 +828,9 @@ const CreateEvent = () => {
                     </div>
                   )}
                 </div>
+                <p className="text-gray-500 text-xs mt-1">
+                  {isEditMode ? '⚠️ En modification, l\'image est conservée automatiquement' : 'Tous formats d\'image (max 5 Mo)'}
+                </p>
               </div>
 
               <div className="md:col-span-2">
@@ -726,12 +877,23 @@ const CreateEvent = () => {
                   <div key={ticket.id} className="flex items-center justify-between bg-gray-800 p-3 rounded-lg">
                     <div className="flex items-center gap-3">
                       {ticket.image_preview && (
-                        <img src={ticket.image_preview} alt={ticket.nom} className="w-10 h-10 object-cover rounded-lg" />
+                        <img 
+                          src={ticket.image_preview} 
+                          alt={ticket.nom} 
+                          className="w-10 h-10 object-cover rounded-lg"
+                          onError={(e) => {
+                            console.error('❌ Erreur chargement image:', ticket.image_preview)
+                            e.target.src = '/images/default-ticket.png'
+                          }}
+                        />
                       )}
                       <div>
                         <span className="text-white font-medium">{ticket.nom}</span>
                         <span className="text-gray-400 text-sm ml-2">{ticket.prix.toLocaleString()} FCFA</span>
                         <span className="text-gray-500 text-xs ml-2">Stock: {ticket.stock}</span>
+                        {ticket.image_url && ticket.image_url !== '/images/default-ticket.png' && (
+                          <span className="text-green-400 text-xs ml-2">✅ Image</span>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -762,7 +924,11 @@ const CreateEvent = () => {
             <button
               type="submit"
               disabled={loading || uploading}
-              className="flex-1 bg-yellow-400 hover:bg-yellow-300 text-black font-semibold py-3 rounded-lg transition-colors disabled:opacity-50"
+              className={`flex-1 py-3 rounded-lg font-semibold transition-colors ${
+                loading || uploading
+                  ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                  : 'bg-yellow-400 hover:bg-yellow-300 text-black'
+              }`}
             >
               {loading ? 'Sauvegarde...' : isEditMode ? 'Modifier l\'événement' : 'Créer l\'événement'}
             </button>
@@ -774,10 +940,30 @@ const CreateEvent = () => {
               Annuler
             </button>
           </div>
+          
+          {isEditMode && (
+            <div className="bg-yellow-400/10 border border-yellow-400/20 rounded-lg p-3 text-center">
+              <p className="text-yellow-400 text-xs">
+                🖼️ Les images des tickets sont conservées automatiquement
+                <br />
+                <span className="text-gray-400 text-[10px]">
+                  L'image existante est récupérée depuis la base de données.
+                </span>
+              </p>
+            </div>
+          )}
+          
+          {!isEditMode && (
+            <div className="bg-blue-400/10 border border-blue-400/20 rounded-lg p-3 text-center">
+              <p className="text-blue-400 text-xs">
+                📸 Les images sélectionnées seront uploadées lors de la création
+              </p>
+            </div>
+          )}
         </form>
       </div>
     </div>
   )
 }
 
-export default CreateEvent
+export default CreateEvent;

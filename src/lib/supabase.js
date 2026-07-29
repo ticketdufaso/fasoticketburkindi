@@ -2,6 +2,10 @@
  * Supabase Client - Sécurité Niveau NASA
  * Règles NASA 1-10
  * Version définitive - Protection maximale
+ * CORRECTIONS :
+ * - Vérification de la session avant de récupérer l'utilisateur
+ * - Gestion propre des erreurs 403 et 400
+ * - Pas de logs inutiles pour les erreurs normales de session
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -78,19 +82,55 @@ export const supabaseAdmin = supabaseServiceKey
 // RÈGLE NASA 4 : Fonctions courtes (< 60 lignes)
 // ============================================================
 
+/**
+ * Récupère l'utilisateur courant
+ * ✅ CORRECTION : Vérifie d'abord la session avant de faire getUser()
+ */
 export const getCurrentUser = async () => {
     try {
+        // ✅ 1. Vérifier si une session existe
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+        
+        // Si erreur de session ou pas de session → retourner null (pas d'erreur)
+        if (sessionError) {
+            // Ignorer silencieusement (pas de log)
+            return null
+        }
+        
+        if (!sessionData?.session) {
+            // Pas de session active → retourner null (pas de log)
+            return null
+        }
+        
+        // ✅ 2. Session existe → récupérer l'utilisateur
         const { data: { user }, error } = await supabase.auth.getUser()
-        if (error) throw error
+        
+        if (error) {
+            // ✅ Ignorer les erreurs 403 (utilisateur non trouvé) - c'est normal
+            if (error.status !== 403 && error.message !== 'User from sub claim in JWT does not exist') {
+                if (import.meta.env.DEV) {
+                    console.warn('[SECURITY] Échec de récupération utilisateur:', error.message)
+                }
+            }
+            return null
+        }
+        
         return user
     } catch (error) {
-        if (import.meta.env.DEV) {
+        // Ignorer toutes les erreurs de session silencieusement
+        if (import.meta.env.DEV && error.message && 
+            !error.message.includes('does not exist') &&
+            !error.message.includes('refresh_token') &&
+            !error.message.includes('Bad Request')) {
             console.warn('[SECURITY] Échec de récupération utilisateur:', error.message)
         }
         return null
     }
 }
 
+/**
+ * Récupère le rôle d'un utilisateur
+ */
 export const getUserRole = async (userId) => {
     if (!userId || typeof userId !== 'string') {
         return null
@@ -103,7 +143,15 @@ export const getUserRole = async (userId) => {
             .eq('id', userId)
             .single()
         
-        if (error) throw error
+        if (error) {
+            // ✅ Ignorer les erreurs de type "not found" silencieusement
+            if (error.code !== 'PGRST116') {
+                if (import.meta.env.DEV) {
+                    console.warn('[SECURITY] Échec de récupération du rôle:', error.message)
+                }
+            }
+            return null
+        }
         
         if (!data) return null
         
@@ -121,6 +169,9 @@ export const getUserRole = async (userId) => {
     }
 }
 
+/**
+ * Vérifie si l'utilisateur est admin
+ */
 export const isAdmin = async (userId) => {
     if (!userId || typeof userId !== 'string') {
         return false
@@ -129,6 +180,9 @@ export const isAdmin = async (userId) => {
     return userData?.role === 'admin' && userData?.statut === true
 }
 
+/**
+ * Vérifie si l'utilisateur est organisateur
+ */
 export const isOrganisateur = async (userId) => {
     if (!userId || typeof userId !== 'string') {
         return false
@@ -137,6 +191,9 @@ export const isOrganisateur = async (userId) => {
     return userData?.role === 'organisateur' && userData?.statut === true && userData?.plan_id !== null
 }
 
+/**
+ * Déconnexion
+ */
 export const logout = async () => {
     try {
         const { error } = await supabase.auth.signOut()
@@ -155,6 +212,9 @@ export const logout = async () => {
     }
 }
 
+/**
+ * Valide la session
+ */
 export const validateSession = async () => {
     try {
         const { data: { session }, error } = await supabase.auth.getSession()
@@ -169,6 +229,9 @@ export const validateSession = async () => {
     }
 }
 
+/**
+ * Supprime un utilisateur d'Auth (admin uniquement)
+ */
 export const deleteUserFromAuth = async (userId) => {
     if (!supabaseAdmin) {
         throw new Error('Service Role Key non configurée')
@@ -183,6 +246,9 @@ export const deleteUserFromAuth = async (userId) => {
     }
 }
 
+/**
+ * Vérifie si l'utilisateur a un plan actif
+ */
 export const verifyUserHasPlan = async (userId) => {
     try {
         const { data, error } = await supabase
@@ -191,7 +257,14 @@ export const verifyUserHasPlan = async (userId) => {
             .eq('id', userId)
             .single()
         
-        if (error) throw error
+        if (error) {
+            if (error.code !== 'PGRST116') {
+                if (import.meta.env.DEV) {
+                    console.warn('[SECURITY] Erreur vérification plan:', error.message)
+                }
+            }
+            return { hasPlan: false, reason: 'Utilisateur non trouvé' }
+        }
         
         if (!data) return { hasPlan: false, reason: 'Utilisateur non trouvé' }
         

@@ -2,11 +2,10 @@
  * Messagerie - Organisateur (Premium uniquement)
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
- * CORRECTIONS FINALES :
- * - +1 visible dans tous les onglets (titre + badge)
- * - +1 disparaît quand on clique sur l'onglet Messagerie
- * - Pas de "lu auto"
- * - Temps réel avec WebSockets
+ * CORRECTIONS :
+ * - Sonnerie avec fichier audio + timestamp pour éviter le cache
+ * - Badge +1 qui disparaît après lecture
+ * - L'organisateur voit "Administration"
  */
 
 import React, { useState, useEffect, useRef } from 'react'
@@ -32,55 +31,38 @@ const MessagerieOrganisateur = () => {
   const [isPremium, setIsPremium] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
   const [soundEnabled, setSoundEnabled] = useState(true)
-  const [adminName, setAdminName] = useState('Administration')
-  const [hasMarkedRead, setHasMarkedRead] = useState(false)
   const messagesEndRef = useRef(null)
-  const audioRef = useRef(null)
-  const discussionKey = 'faso-ticket-organisateur-discussion'
+
+  // ✅ TIMESTAMP POUR ÉVITER LE CACHE DU SON
+  const getAudioUrl = () => {
+    const timestamp = Date.now()
+    return `/sounds/notification.mp3?t=${timestamp}`
+  }
 
   // ============================================================
-  // CHARGER LA DISCUSSION SAUVEGARDÉE
+  // ✅ CORRECTION : SONNERIE AVEC FICHIER AUDIO + TIMESTAMP
   // ============================================================
-  useEffect(() => {
-    const saved = localStorage.getItem(discussionKey)
-    if (saved) {
-      try {
-        const data = JSON.parse(saved)
-      } catch (e) {}
+  const playSound = () => {
+    if (!soundEnabled) return
+    
+    try {
+      const audio = new Audio(getAudioUrl())
+      audio.volume = 0.5
+      audio.play().catch(() => {
+        // Ignorer les erreurs de lecture
+      })
+    } catch (e) {
+      // Ignorer les erreurs
     }
-  }, [])
+  }
 
   // ============================================================
-  // SAUVEGARDER LA DISCUSSION
+  // DEMANDER LA PERMISSION DE NOTIFICATION
   // ============================================================
   useEffect(() => {
-    if (messages.length > 0) {
-      localStorage.setItem(discussionKey, JSON.stringify({
-        lastMessage: messages[messages.length - 1],
-        count: messages.length
-      }))
+    if (Notification.permission === 'default') {
+      Notification.requestPermission()
     }
-  }, [messages])
-
-  // ============================================================
-  // SON DE NOTIFICATION
-  // ============================================================
-  useEffect(() => {
-    const createNotificationSound = () => {
-      try {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-        const oscillator = audioCtx.createOscillator()
-        const gainNode = audioCtx.createGain()
-        oscillator.connect(gainNode)
-        gainNode.connect(audioCtx.destination)
-        oscillator.frequency.value = 800
-        oscillator.type = 'sine'
-        gainNode.gain.value = 0.3
-        oscillator.start()
-        oscillator.stop(audioCtx.currentTime + 0.15)
-      } catch (e) {}
-    }
-    audioRef.current = createNotificationSound
   }, [])
 
   // ============================================================
@@ -99,17 +81,15 @@ const MessagerieOrganisateur = () => {
           if (newMsg.organisateur_id === user.id && !newMsg.is_deleted) {
             setMessages(prev => [...prev, newMsg])
             
-            if (newMsg.sender === 'admin' && newMsg.admin_id !== user.id) {
-              if (soundEnabled && audioRef.current) {
-                try { audioRef.current() } catch (e) {}
-              }
+            // ✅ CORRECTION : Sonnerie pour les messages de l'admin uniquement
+            if (newMsg.sender === 'admin') {
+              playSound()
               setUnreadCount(prev => prev + 1)
               document.title = `📩 (${unreadCount + 1}) FASO TICKET`
               
-              const senderName = newMsg.sender_name || 'Administration'
               if (Notification.permission === 'granted') {
                 new Notification('📩 Nouveau message de l\'administration', {
-                  body: `${senderName} : ${newMsg.message.substring(0, 50)}${newMsg.message.length > 50 ? '...' : ''}`,
+                  body: `Administration : ${newMsg.message.substring(0, 50)}${newMsg.message.length > 50 ? '...' : ''}`,
                   icon: '/favicon.png'
                 })
               }
@@ -126,12 +106,8 @@ const MessagerieOrganisateur = () => {
       )
       .subscribe()
 
-    if (Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
-
     return () => subscription.unsubscribe()
-  }, [user, soundEnabled])
+  }, [user, soundEnabled, unreadCount])
 
   // ============================================================
   // CHARGER LES DONNÉES
@@ -140,7 +116,6 @@ const MessagerieOrganisateur = () => {
     checkPlan()
     fetchMessages()
     fetchUnreadCount()
-    fetchAdminName()
   }, [user])
 
   // ============================================================
@@ -171,23 +146,6 @@ const MessagerieOrganisateur = () => {
     }
   }
 
-  const fetchAdminName = async () => {
-    try {
-      const { data } = await supabase
-        .from('profiles')
-        .select('structure, nom_associe')
-        .eq('role', 'admin')
-        .limit(1)
-        .single()
-      
-      if (data) {
-        setAdminName(data.structure || data.nom_associe || 'Administration')
-      }
-    } catch (error) {
-      console.error('Erreur:', error)
-    }
-  }
-
   const fetchMessages = async () => {
     if (!user) return
 
@@ -203,7 +161,7 @@ const MessagerieOrganisateur = () => {
       if (error) throw error
       setMessages(data || [])
       
-      // Marquer comme lus UNIQUEMENT quand on ouvre la messagerie
+      // ✅ Marquer les messages comme lus APRÈS le chargement
       await markMessagesAsRead()
 
       scrollToBottom()
@@ -215,32 +173,43 @@ const MessagerieOrganisateur = () => {
   }
 
   // ============================================================
-  // MARQUER LES MESSAGES COMME LUS (UNIQUEMENT QUAND ON OUVRE LA MESSAGERIE)
+  // ✅ CORRECTION : MARQUER LES MESSAGES COMME LUS
   // ============================================================
   const markMessagesAsRead = async () => {
-    // Récupérer les messages non lus de l'admin
-    const { data: unreadMessages, error } = await supabase
-      .from('messages')
-      .select('id')
-      .eq('organisateur_id', user.id)
-      .eq('is_deleted', false)
-      .eq('lu', false)
-      .eq('sender', 'admin')
+    if (!user) return
 
-    if (error || !unreadMessages || unreadMessages.length === 0) return
+    try {
+      // Récupérer les messages non lus de l'admin
+      const { data: unreadMessages, error } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('organisateur_id', user.id)
+        .eq('is_deleted', false)
+        .eq('lu', false)
+        .eq('sender', 'admin')
 
-    // Marquer comme lus
-    const ids = unreadMessages.map(m => m.id)
-    await supabase
-      .from('messages')
-      .update({ lu: true })
-      .in('id', ids)
+      if (error) throw error
 
-    // Recalculer le compteur
-    await fetchUnreadCount()
-    setHasMarkedRead(true)
+      if (unreadMessages && unreadMessages.length > 0) {
+        const ids = unreadMessages.map(m => m.id)
+        
+        // Marquer comme lus
+        const { error: updateError } = await supabase
+          .from('messages')
+          .update({ lu: true })
+          .in('id', ids)
+
+        if (updateError) throw updateError
+
+        // ✅ Mettre à jour le compteur
+        await fetchUnreadCount()
+      }
+    } catch (error) {
+      console.error('Erreur marquage lu:', error)
+    }
   }
 
+  // ✅ CORRECTION : RÉCUPÉRER LE NOMBRE DE MESSAGES NON LUS
   const fetchUnreadCount = async () => {
     if (!user) return
 
@@ -263,7 +232,7 @@ const MessagerieOrganisateur = () => {
         document.title = 'FASO TICKET - Billetterie sécurisée'
       }
     } catch (error) {
-      console.error('Erreur:', error)
+      console.error('Erreur comptage:', error)
     }
   }
 
@@ -328,7 +297,7 @@ const MessagerieOrganisateur = () => {
       return 'Moi'
     }
     if (msg.sender === 'admin') {
-      return msg.sender_name || adminName || 'Administration'
+      return 'Administration'
     }
     return 'Administration'
   }
@@ -398,6 +367,7 @@ const MessagerieOrganisateur = () => {
             <h1 className="text-2xl font-bold text-white">
               <span className="text-yellow-400">Messagerie</span> avec l'administration
             </h1>
+            {/* ✅ BADGE +1 pour les messages non lus */}
             {unreadCount > 0 && (
               <span className="bg-red-500 text-white text-xs rounded-full px-2 py-0.5 animate-pulse">
                 +{unreadCount}

@@ -1,3 +1,4 @@
+# .gitignore
 # Logs
 logs
 *.log
@@ -24,7 +25,7 @@ dist-ssr
 *.sw?
 *.swp
 
-# Environment
+# Environment - ✅ IMPORTANT
 .env
 .env.local
 .env.*.local
@@ -65,5 +66,7 @@ ehthumbs.db
 # Vite
 .vite/
 
-# ✅ AJOUTÉ : Sauvegardes du script clean-logs
-*.clean-backup*.clean-backup 
+# Sauvegardes
+*.clean-backup".env" 
+".env.local" 
+".env.production" 

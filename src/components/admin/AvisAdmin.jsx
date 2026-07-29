@@ -302,9 +302,6 @@ const AvisAdmin = () => {
             <MessageSquare className="w-5 h-5 text-yellow-400" />
             <h2 className="text-white font-semibold">Gestion des avis</h2>
             <span className="text-gray-400 text-sm">({totalCount})</span>
-            <span className="text-green-400 text-xs bg-green-500/20 px-2 py-0.5 rounded-full">
-              ✅ Visibles immédiatement
-            </span>
             {selectedIds.length > 0 && (
               <span className="text-blue-400 text-xs bg-blue-500/20 px-2 py-0.5 rounded-full">
                 {selectedIds.length} sélectionné(s)

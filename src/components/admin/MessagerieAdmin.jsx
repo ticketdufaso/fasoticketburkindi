@@ -2,14 +2,10 @@
  * Messagerie - Admin
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
- * CORRECTIONS FINALES :
- * - +1 visible dans tous les onglets (titre + badge)
- * - +1 disparaît quand on clique sur l'onglet Messagerie
- * - Pas de "lu auto"
- * - Temps réel avec WebSockets
- * - Suppression réelle (DELETE) de la discussion COMPLÈTE
- * - Bouton "Supprimer la discussion" pour chaque discussion
- * - On ne peut supprimer que ses propres messages
+ * CORRECTIONS :
+ * - Sonnerie avec fichier audio + timestamp pour éviter le cache
+ * - Badge +1 pour les nouveaux messages qui disparaît après lecture
+ * - L'admin voit le nom de l'organisateur
  */
 
 import React, { useState, useEffect, useRef } from 'react'
@@ -40,64 +36,37 @@ const MessagerieAdmin = () => {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
   const messagesEndRef = useRef(null)
-  const audioRef = useRef(null)
-  const discussionKey = 'faso-ticket-discussion'
+
+  // ✅ TIMESTAMP POUR ÉVITER LE CACHE DU SON
+  const getAudioUrl = () => {
+    const timestamp = Date.now()
+    return `/sounds/notification.mp3?t=${timestamp}`
+  }
 
   // ============================================================
-  // CHARGER LA DISCUSSION SAUVEGARDÉE
+  // ✅ CORRECTION : SONNERIE AVEC FICHIER AUDIO + TIMESTAMP
   // ============================================================
-  useEffect(() => {
-    const saved = localStorage.getItem(discussionKey)
-    if (saved) {
-      try {
-        const data = JSON.parse(saved)
-        setDiscussionType(data.type || 'admin_public')
-        if (data.type === 'admin_public') {
-          setSelectedDiscussion({ id: 'public', nom: 'Discussion publique' })
-        } else if (data.type === 'organisateur' || data.type === 'admin_private') {
-          setSelectedDiscussion(data.discussion)
-        }
-      } catch (e) {
-        setDiscussionType('admin_public')
-        setSelectedDiscussion({ id: 'public', nom: 'Discussion publique' })
-      }
-    } else {
-      setDiscussionType('admin_public')
-      setSelectedDiscussion({ id: 'public', nom: 'Discussion publique' })
+  const playSound = () => {
+    if (!soundEnabled) return
+    
+    try {
+      const audio = new Audio(getAudioUrl())
+      audio.volume = 0.5
+      audio.play().catch(() => {
+        // Ignorer les erreurs de lecture
+      })
+    } catch (e) {
+      // Ignorer les erreurs
     }
-  }, [])
+  }
 
   // ============================================================
-  // SAUVEGARDER LA DISCUSSION
+  // DEMANDER LA PERMISSION DE NOTIFICATION
   // ============================================================
   useEffect(() => {
-    if (selectedDiscussion) {
-      localStorage.setItem(discussionKey, JSON.stringify({
-        type: discussionType,
-        discussion: selectedDiscussion
-      }))
+    if (Notification.permission === 'default') {
+      Notification.requestPermission()
     }
-  }, [selectedDiscussion, discussionType])
-
-  // ============================================================
-  // SON DE NOTIFICATION
-  // ============================================================
-  useEffect(() => {
-    const createNotificationSound = () => {
-      try {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-        const oscillator = audioCtx.createOscillator()
-        const gainNode = audioCtx.createGain()
-        oscillator.connect(gainNode)
-        gainNode.connect(audioCtx.destination)
-        oscillator.frequency.value = 800
-        oscillator.type = 'sine'
-        gainNode.gain.value = 0.3
-        oscillator.start()
-        oscillator.stop(audioCtx.currentTime + 0.15)
-      } catch (e) {}
-    }
-    audioRef.current = createNotificationSound
   }, [])
 
   // ============================================================
@@ -121,15 +90,14 @@ const MessagerieAdmin = () => {
           if (isConcerned && !newMsg.is_deleted) {
             setMessages(prev => [...prev, newMsg])
             
+            // ✅ CORRECTION : Sonnerie pour les messages des autres (admin ou organisateur)
             if (newMsg.sender !== 'admin' || newMsg.admin_id !== user.id) {
-              if (soundEnabled && audioRef.current) {
-                try { audioRef.current() } catch (e) {}
-              }
+              playSound()
               setUnreadCount(prev => prev + 1)
               document.title = `📩 (${unreadCount + 1}) FASO TICKET`
               
               if (Notification.permission === 'granted') {
-                const senderName = newMsg.sender_name || (newMsg.sender === 'organisateur' ? 'Organisateur' : 'Admin')
+                const senderName = getSenderNameForNotif(newMsg)
                 new Notification('📩 Nouveau message', {
                   body: `${senderName} : ${newMsg.message.substring(0, 50)}${newMsg.message.length > 50 ? '...' : ''}`,
                   icon: '/favicon.png'
@@ -148,12 +116,8 @@ const MessagerieAdmin = () => {
       )
       .subscribe()
 
-    if (Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
-
     return () => subscription.unsubscribe()
-  }, [selectedDiscussion, user.id, soundEnabled])
+  }, [selectedDiscussion, user.id, soundEnabled, unreadCount])
 
   // ============================================================
   // CHARGER LES DONNÉES
@@ -236,7 +200,9 @@ const MessagerieAdmin = () => {
       if (error) throw error
       setMessages(data || [])
       
+      // ✅ Marquer les messages comme lus APRÈS le chargement
       await markMessagesAsRead()
+
       scrollToBottom()
     } catch (error) {
       console.error('Erreur:', error)
@@ -244,26 +210,38 @@ const MessagerieAdmin = () => {
   }
 
   // ============================================================
-  // MARQUER LES MESSAGES COMME LUS
+  // ✅ CORRECTION : MARQUER LES MESSAGES COMME LUS
   // ============================================================
   const markMessagesAsRead = async () => {
-    const { data: unreadMessages, error } = await supabase
-      .from('messages')
-      .select('id')
-      .eq('is_deleted', false)
-      .eq('lu', false)
-      .neq('admin_id', user.id)
-      .neq('sender', 'admin')
+    try {
+      // Récupérer les messages non lus (qui ne sont pas de l'admin courant)
+      const { data: unreadMessages, error } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('is_deleted', false)
+        .eq('lu', false)
+        .neq('admin_id', user.id)
+        .neq('sender', 'admin')
 
-    if (error || !unreadMessages || unreadMessages.length === 0) return
+      if (error) throw error
 
-    const ids = unreadMessages.map(m => m.id)
-    await supabase
-      .from('messages')
-      .update({ lu: true })
-      .in('id', ids)
+      if (unreadMessages && unreadMessages.length > 0) {
+        const ids = unreadMessages.map(m => m.id)
+        
+        // Marquer comme lus
+        const { error: updateError } = await supabase
+          .from('messages')
+          .update({ lu: true })
+          .in('id', ids)
 
-    await fetchUnreadCount()
+        if (updateError) throw updateError
+
+        // ✅ Mettre à jour le compteur
+        await fetchUnreadCount()
+      }
+    } catch (error) {
+      console.error('Erreur marquage lu:', error)
+    }
   }
 
   const fetchUnreadCount = async () => {
@@ -286,7 +264,7 @@ const MessagerieAdmin = () => {
         document.title = 'FASO TICKET - Billetterie sécurisée'
       }
     } catch (error) {
-      console.error('Erreur:', error)
+      console.error('Erreur comptage:', error)
     }
   }
 
@@ -319,7 +297,7 @@ const MessagerieAdmin = () => {
 
     try {
       const adminInfo = admins.find(a => a.id === user.id)
-      const senderName = adminInfo?.structure || adminInfo?.nom_associe || 'Admin'
+      const senderName = adminInfo?.structure || adminInfo?.nom_associe || 'Administration'
 
       const messageData = {
         message: reponse.trim(),
@@ -357,9 +335,31 @@ const MessagerieAdmin = () => {
     }
   }
 
-  // ============================================================
-  // SUPPRIMER UN MESSAGE (UNIQUEMENT SES PROPRES MESSAGES)
-  // ============================================================
+  const getSenderNameForNotif = (msg) => {
+    if (msg.sender === 'organisateur') {
+      const org = organisateurs.find(o => o.id === msg.organisateur_id)
+      return org?.structure || 'Organisateur'
+    }
+    if (msg.sender === 'admin') {
+      const admin = admins.find(a => a.id === msg.admin_id)
+      return admin?.structure || admin?.nom_associe || 'Admin'
+    }
+    return msg.sender_name || 'Admin'
+  }
+
+  const getSenderName = (msg) => {
+    if (msg.sender === 'organisateur') {
+      const org = organisateurs.find(o => o.id === msg.organisateur_id)
+      return org?.structure || 'Organisateur'
+    }
+    if (msg.sender === 'admin') {
+      if (msg.admin_id === user.id) return 'Moi'
+      const admin = admins.find(a => a.id === msg.admin_id)
+      return admin?.structure || admin?.nom_associe || 'Admin'
+    }
+    return msg.sender_name || 'Admin'
+  }
+
   const handleDeleteMessage = async (messageId) => {
     const message = messages.find(m => m.id === messageId)
     if (!message) {
@@ -395,9 +395,6 @@ const MessagerieAdmin = () => {
     }
   }
 
-  // ============================================================
-  // SUPPRIMER UNE DISCUSSION (DELETE RÉEL - SUPPRIME TOUT)
-  // ============================================================
   const handleDeleteDiscussion = async () => {
     if (!confirm('⚠️ Supprimer définitivement cette discussion pour tous les participants ?')) return
 
@@ -429,7 +426,7 @@ const MessagerieAdmin = () => {
       await fetchMessages()
       await fetchUnreadCount()
       
-      localStorage.setItem(discussionKey, JSON.stringify({
+      localStorage.setItem('faso-ticket-discussion', JSON.stringify({
         type: 'admin_public',
         discussion: { id: 'public', nom: 'Discussion publique' }
       }))
@@ -442,9 +439,6 @@ const MessagerieAdmin = () => {
     }
   }
 
-  // ============================================================
-  // SUPPRIMER UNE DISCUSSION SPÉCIFIQUE (NOUVEAU BOUTON)
-  // ============================================================
   const handleDeleteSpecificDiscussion = async (discussionId, discussionType) => {
     if (!confirm('⚠️ Supprimer définitivement cette discussion pour tous les participants ?')) return
     if (!confirm('Cette action est irréversible. Confirmer ?')) return
@@ -471,15 +465,10 @@ const MessagerieAdmin = () => {
 
       setSuccess('✅ Discussion supprimée pour tous')
       
-      // Si c'est la discussion actuelle, revenir à la discussion publique
       if (selectedDiscussion?.id === discussionId) {
         setDiscussionType('admin_public')
         setSelectedDiscussion({ id: 'public', nom: 'Discussion publique' })
         await fetchMessages()
-        localStorage.setItem(discussionKey, JSON.stringify({
-          type: 'admin_public',
-          discussion: { id: 'public', nom: 'Discussion publique' }
-        }))
       }
       
       await fetchUnreadCount()
@@ -493,9 +482,6 @@ const MessagerieAdmin = () => {
     }
   }
 
-  // ============================================================
-  // CRÉER UNE DISCUSSION PRIVÉE
-  // ============================================================
   const handleCreatePrivateDiscussion = async (adminId) => {
     const targetAdmin = admins.find(a => a.id === adminId)
     if (!targetAdmin) return
@@ -504,10 +490,6 @@ const MessagerieAdmin = () => {
     setSelectedDiscussion(targetAdmin)
     setShowNewChatModal(false)
     await fetchMessages()
-    localStorage.setItem(discussionKey, JSON.stringify({
-      type: 'admin_private',
-      discussion: targetAdmin
-    }))
   }
 
   const getDiscussionTitle = () => {
@@ -521,18 +503,6 @@ const MessagerieAdmin = () => {
       return `🔒 Privé - ${selectedDiscussion.structure || selectedDiscussion.nom_associe || 'Admin'}`
     }
     return 'Discussion'
-  }
-
-  const getSenderName = (msg) => {
-    if (msg.sender === 'organisateur') {
-      return organisateurs.find(o => o.id === msg.organisateur_id)?.structure || 'Organisateur'
-    }
-    if (msg.sender === 'admin') {
-      if (msg.admin_id === user.id) return 'Moi'
-      const admin = admins.find(a => a.id === msg.admin_id)
-      return admin?.structure || admin?.nom_associe || 'Admin'
-    }
-    return msg.sender_name || 'Admin'
   }
 
   const filteredOrganisateurs = organisateurs.filter(org =>
@@ -557,6 +527,7 @@ const MessagerieAdmin = () => {
           <div className="flex items-center gap-2">
             <MessageSquare className="w-5 h-5 text-yellow-400" />
             <h2 className="text-white font-semibold">Messagerie</h2>
+            {/* ✅ BADGE +1 pour les messages non lus */}
             {unreadCount > 0 && (
               <span className="bg-red-500 text-white text-xs rounded-full px-2 py-0.5 animate-pulse">
                 +{unreadCount}
@@ -577,10 +548,6 @@ const MessagerieAdmin = () => {
                 setDiscussionType('admin_public')
                 setSelectedDiscussion({ id: 'public', nom: 'Discussion publique' })
                 fetchMessages()
-                localStorage.setItem(discussionKey, JSON.stringify({
-                  type: 'admin_public',
-                  discussion: { id: 'public', nom: 'Discussion publique' }
-                }))
               }}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-sm font-medium ${
                 discussionType === 'admin_public'
@@ -630,17 +597,13 @@ const MessagerieAdmin = () => {
           </div>
 
           {/* Discussion publique */}
-          <button
+          <div
             onClick={() => {
               setDiscussionType('admin_public')
               setSelectedDiscussion({ id: 'public', nom: 'Discussion publique' })
               fetchMessages()
-              localStorage.setItem(discussionKey, JSON.stringify({
-                type: 'admin_public',
-                discussion: { id: 'public', nom: 'Discussion publique' }
-              }))
             }}
-            className={`w-full text-left p-3 rounded-lg transition-colors mb-2 ${
+            className={`w-full text-left p-3 rounded-lg transition-colors mb-2 cursor-pointer ${
               discussionType === 'admin_public'
                 ? 'bg-yellow-400/10 border border-yellow-400/30'
                 : 'hover:bg-gray-800'
@@ -651,18 +614,18 @@ const MessagerieAdmin = () => {
                 <Hash className="w-4 h-4 text-yellow-400" />
                 <span className="text-white font-medium">💬 Discussion publique</span>
               </div>
-              <button
+              <div
                 onClick={(e) => {
                   e.stopPropagation()
                   handleDeleteSpecificDiscussion('public', 'admin_public')
                 }}
-                className="text-red-400 hover:text-red-300 transition-colors p-1"
+                className="text-red-400 hover:text-red-300 transition-colors p-1 cursor-pointer"
                 title="Supprimer cette discussion"
               >
                 <Trash2 className="w-4 h-4" />
-              </button>
+              </div>
             </div>
-          </button>
+          </div>
 
           {/* Discussions privées */}
           <p className="text-gray-500 text-xs mt-4 mb-2">Discussions privées</p>
@@ -670,18 +633,14 @@ const MessagerieAdmin = () => {
             <p className="text-gray-500 text-xs text-center py-2">Aucun autre admin</p>
           ) : (
             admins.filter(a => a.id !== user.id).map((admin) => (
-              <button
+              <div
                 key={admin.id}
                 onClick={() => {
                   setDiscussionType('admin_private')
                   setSelectedDiscussion(admin)
                   fetchMessages()
-                  localStorage.setItem(discussionKey, JSON.stringify({
-                    type: 'admin_private',
-                    discussion: admin
-                  }))
                 }}
-                className={`w-full text-left p-3 rounded-lg transition-colors mb-1 ${
+                className={`w-full text-left p-3 rounded-lg transition-colors mb-1 cursor-pointer ${
                   discussionType === 'admin_private' && selectedDiscussion?.id === admin.id
                     ? 'bg-yellow-400/10 border border-yellow-400/30'
                     : 'hover:bg-gray-800'
@@ -697,18 +656,18 @@ const MessagerieAdmin = () => {
                       <Crown className="w-3 h-3 text-yellow-400" />
                     )}
                   </div>
-                  <button
+                  <div
                     onClick={(e) => {
                       e.stopPropagation()
                       handleDeleteSpecificDiscussion(admin.id, 'admin_private')
                     }}
-                    className="text-red-400 hover:text-red-300 transition-colors p-1"
+                    className="text-red-400 hover:text-red-300 transition-colors p-1 cursor-pointer"
                     title="Supprimer cette discussion"
                   >
                     <Trash2 className="w-4 h-4" />
-                  </button>
+                  </div>
                 </div>
-              </button>
+              </div>
             ))
           )}
 
@@ -722,18 +681,14 @@ const MessagerieAdmin = () => {
           ) : (
             <div className="space-y-1">
               {filteredOrganisateurs.map((org) => (
-                <button
+                <div
                   key={org.id}
                   onClick={() => {
                     setDiscussionType('organisateur')
                     setSelectedDiscussion(org)
                     fetchMessages()
-                    localStorage.setItem(discussionKey, JSON.stringify({
-                      type: 'organisateur',
-                      discussion: org
-                    }))
                   }}
-                  className={`w-full text-left p-3 rounded-lg transition-colors ${
+                  className={`w-full text-left p-3 rounded-lg transition-colors cursor-pointer ${
                     discussionType === 'organisateur' && selectedDiscussion?.id === org.id
                       ? 'bg-yellow-400/10 border border-yellow-400/30'
                       : 'hover:bg-gray-800'
@@ -745,18 +700,18 @@ const MessagerieAdmin = () => {
                       <p className="text-gray-400 text-xs truncate">{org.email}</p>
                       <span className="text-yellow-400 text-[10px]">⭐ Premium</span>
                     </div>
-                    <button
+                    <div
                       onClick={(e) => {
                         e.stopPropagation()
                         handleDeleteSpecificDiscussion(org.id, 'organisateur')
                       }}
-                      className="text-red-400 hover:text-red-300 transition-colors p-1 flex-shrink-0 ml-2"
+                      className="text-red-400 hover:text-red-300 transition-colors p-1 cursor-pointer flex-shrink-0 ml-2"
                       title="Supprimer cette discussion"
                     >
                       <Trash2 className="w-4 h-4" />
-                    </button>
+                    </div>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -787,9 +742,7 @@ const MessagerieAdmin = () => {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => {
-                      markMessagesAsRead()
-                    }}
+                    onClick={() => markMessagesAsRead()}
                     className="text-gray-400 hover:text-yellow-400 transition-colors p-1"
                     title="Tout marquer comme lu"
                   >
