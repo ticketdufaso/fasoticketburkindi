@@ -67,6 +67,4 @@ ehthumbs.db
 .vite/
 
 # Sauvegardes
-*.clean-backup".env" 
-".env.local" 
-".env.production" 
+*.clean-backup
