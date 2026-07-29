@@ -65,7 +65,7 @@ const EXCLUDED_PATTERNS = [
   'react-router-dom',
   'scheduler',
   'workbox',
-  'goober'  // ✅ AJOUT : Goober (CSS-in-JS utilisé par Lucide)
+  'goober'
 ]
 
 // ✅ Exclure par contenu (si le fichier contient ces mots-clés, on ne l'obfusque pas)
@@ -91,9 +91,9 @@ const EXCLUDED_CONTENT_MARKERS = [
   'createRoot',
   'render',
   'hydrateRoot',
-  'goober',  // ✅ AJOUT : Détecter Goober dans le contenu
-  'css',     // Goober utilise la fonction css
-  'styled'   // Goober utilise styled
+  'goober',
+  'css',
+  'styled'
 ]
 
 const ALLOWED_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']
@@ -115,14 +115,10 @@ const isObfuscated = (content) => {
 }
 
 const shouldExcludeByContent = (content) => {
-  // Si le fichier contient des marqueurs React ou Goober, on l'exclut
   const hasReactMarker = EXCLUDED_CONTENT_MARKERS.some(marker => 
     content.includes(marker)
   )
-  
-  // Si le fichier est déjà obfusqué, on l'exclut
   const isAlreadyObfuscated = isObfuscated(content)
-  
   return hasReactMarker || isAlreadyObfuscated
 }
 
@@ -130,10 +126,9 @@ const obfuscateFile = (filePath) => {
   try {
     const content = fs.readFileSync(filePath, 'utf8')
     
-    // ✅ Vérifier si le fichier contient du code React ou Goober
     if (shouldExcludeByContent(content)) {
       stats.skipped++
-      console.log(`⏭️  Exclus (contient React/Goober ou déjà obfusqué): ${path.basename(filePath)}`)
+      console.log(`⏭️ Exclus (contient React/Goober ou déjà obfusqué): ${path.basename(filePath)}`)
       return
     }
     
@@ -173,7 +168,7 @@ const obfuscateDirectory = (directory) => {
         obfuscateFile(fullPath)
       } else if (isExcludedByName) {
         stats.skipped++
-        console.log(`⏭️  Exclus par nom: ${path.basename(file)}`)
+        console.log(`⏭️ Exclus par nom: ${path.basename(file)}`)
       }
     }
   }
@@ -204,7 +199,7 @@ const main = () => {
   console.log('📊 RÉSUMÉ:')
   console.log(`   ✅ Succès: ${stats.success}`)
   console.log(`   ❌ Échecs: ${stats.failed}`)
-  console.log(`   ⏭️  Ignorés: ${stats.skipped}`)
+  console.log(`   ⏭️ Ignorés: ${stats.skipped}`)
   console.log('')
   console.log('🎯 Obfuscation terminée !')
 }
