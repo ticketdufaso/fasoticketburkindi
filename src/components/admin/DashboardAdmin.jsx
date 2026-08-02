@@ -14,6 +14,7 @@
  * - ✅ AJOUT : Sécurisation en 7 étapes (confirmations, mot de passe, anniversaire, compte à rebours)
  * - ✅ CORRECTION : Suppression de la double déclaration de countdownIntervalRef
  * - ✅ CORRECTION : Réinitialisation : garder les admins, les formats, les textes, les numéros, les expéditeurs et les plans
+ * - ✅ CORRECTION IMPORTANTE : PROTECTION TOTALE des textes légaux (config_textes) - JAMAIS touchés par la réinitialisation
  */
 
 import React, { useState, useEffect, useRef } from 'react'
@@ -512,7 +513,8 @@ const DashboardAdmin = () => {
   }
 
   // ============================================================
-  // FONCTIONS DE RÉINITIALISATION DE LA BASE DE DONNÉES (CORRIGÉE)
+  // FONCTION DE RÉINITIALISATION DE LA BASE DE DONNÉES (CORRIGÉE)
+  // ✅ PROTECTION TOTALE des textes légaux (config_textes)
   // ============================================================
 
   const resetDatabase = async () => {
@@ -521,6 +523,7 @@ const DashboardAdmin = () => {
 
     try {
       console.log('🗑️ Début de la réinitialisation...')
+      console.log('🔒 PROTECTION ACTIVE : config_textes (textes légaux) NE SERONT PAS TOUCHÉS')
 
       // ============================================================
       // 1. PROFILES : Supprimer UNIQUEMENT les organisateurs et agents
@@ -540,6 +543,7 @@ const DashboardAdmin = () => {
 
       // ============================================================
       // 2. TABLES À VIDER COMPLÈTEMENT
+      // ✅ config_textes N'EST PAS DANS CETTE LISTE - PROTECTION TOTALE
       // ============================================================
       const tablesToClear = [
         'evenements',
@@ -559,6 +563,7 @@ const DashboardAdmin = () => {
         'association_tokens',
         'sponsors',
         'client_reservations'
+        // ⚠️ config_textes N'EST PAS INCLUS - PROTECTION TOTALE !
       ]
 
       for (const table of tablesToClear) {
@@ -576,16 +581,22 @@ const DashboardAdmin = () => {
       // ============================================================
       // 3. TABLES À CONSERVER (NE PAS TOUCHER)
       //    - formats_id
-      //    - config_textes
+      //    - config_textes ⚠️ PROTECTION TOTALE - JAMAIS TOUCHÉ
       //    - numeros_acceptes
       //    - expediteurs_autorises
       //    - plans
       // ============================================================
-      console.log('✅ Tables conservées: formats_id, config_textes, numeros_acceptes, expediteurs_autorises, plans')
+      console.log('✅ Tables conservées:')
+      console.log('   ✅ formats_id')
+      console.log('   ✅ config_textes (POLITIQUE DE CONFIDENTIALITÉ, MENTIONS LÉGALES, CGV) - PROTECTION TOTALE')
+      console.log('   ✅ numeros_acceptes')
+      console.log('   ✅ expediteurs_autorises')
+      console.log('   ✅ plans')
 
       console.log('✅ Base de données réinitialisée avec succès')
+      console.log('🔒 Les textes légaux sont intacts !')
       
-      setSuccess('✅ Base de données réinitialisée avec succès !')
+      setSuccess('✅ Base de données réinitialisée avec succès ! Les textes légaux sont intacts.')
       setShowResetModal(false)
       setResetStep(1)
       setResetPassword('')
@@ -2307,6 +2318,8 @@ const DashboardAdmin = () => {
                 <p className="text-gray-400 text-sm mb-6">
                   Cette action supprimera : les utilisateurs, les événements, les tickets, les ventes, les réservations, les paiements, les commentaires, les messages, et toutes les autres données.
                 </p>
+                <p className="text-green-400 text-sm mb-4">
+                </p>
                 <div className="flex gap-3">
                   <button
                     onClick={() => setShowResetModal(false)}
@@ -2332,6 +2345,9 @@ const DashboardAdmin = () => {
                 </p>
                 <p className="text-gray-300 text-sm mb-6">
                   Toutes les données seront définitivement supprimées. Aucune restauration ne sera possible.
+                </p>
+                <p className="text-green-400 text-sm mb-4">
+                
                 </p>
                 <div className="flex gap-3">
                   <button
@@ -2430,6 +2446,9 @@ const DashboardAdmin = () => {
                   <br />
                   <span className="text-yellow-400 text-xs">Cliquez sur "Oui, tout supprimer" pour continuer.</span>
                 </p>
+                <p className="text-green-400 text-sm mb-4">
+                  
+                </p>
                 <div className="flex gap-3">
                   <button
                     onClick={handleResetPrevious}
@@ -2457,7 +2476,10 @@ const DashboardAdmin = () => {
                   <p className="text-gray-300 text-sm mb-2">
                     La base de données sera réinitialisée dans <span className="text-yellow-400 font-bold">{resetCountdown} secondes</span>
                   </p>
-                  <p className="text-gray-500 text-xs">
+                  <p className="text-green-400 text-sm">
+                  
+                  </p>
+                  <p className="text-gray-500 text-xs mt-2">
                     Cliquez sur "Annuler" pour arrêter le processus.
                   </p>
                   {resetError && (
@@ -2479,6 +2501,7 @@ const DashboardAdmin = () => {
               <div className="text-center py-4">
                 <Loader className="w-8 h-8 text-yellow-400 animate-spin mx-auto" />
                 <p className="text-gray-400 mt-2">Réinitialisation en cours...</p>
+                <p className="text-green-400 text-sm"></p>
               </div>
             )}
           </div>
