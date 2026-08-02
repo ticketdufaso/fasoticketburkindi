@@ -3,15 +3,10 @@
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
  * Version complète et finale - avec bouton retour
- * AJOUTS :
- * - Avantages Premium : Supervision des agents en temps réel
- * - Avantages Premium : Gateway SMS & Scanner
- * - Avantages Premium : Génération illimitée de clés d'association
- * - Avantages Basique : Gateway SMS & Scanner (1 clé max)
- * - Avantages Basique : Génération unique de clé d'association
- * - Design responsive
- * - Sélection des plans
- * - Récupération dynamique des plans depuis la base de données
+ * CORRECTIONS :
+ * - ✅ Utilisation de l'ID réel du plan (UUID) au lieu du nom en minuscules
+ * - ✅ Le lien vers paiement-plan utilise l'ID du plan (UUID)
+ * - ✅ Plus de problèmes de casse
  */
 
 import React, { useState, useEffect } from 'react'
@@ -134,9 +129,7 @@ const DevenirOrganisateur = () => {
           features.push('Messagerie avec l\'administration')
         }
 
-        // ============================================================
         // AVANTAGES GATEWAY POUR LES DEUX PLANS
-        // ============================================================
         if (plan.nom === 'Basique') {
           features.push('🔄 Génération unique de clé d\'association')
           features.push('📱 Gateway SMS & Scanner')
@@ -156,7 +149,9 @@ const DevenirOrganisateur = () => {
         const duree = plan.duree_jours ? `${plan.duree_jours} jours` : ''
 
         return {
-          id: plan.nom.toLowerCase(),
+          // ✅ CORRECTION : Utiliser l'ID réel du plan (UUID)
+          // C'est plus fiable, sécurisé et durable car l'UUID ne change jamais
+          id: plan.id,  // ← UUID réel de la table plans
           nom: plan.nom,
           prix: plan.prix,
           duree: duree,
@@ -356,6 +351,7 @@ const DevenirOrganisateur = () => {
 
         {selectedPlan && (
           <div className="mt-8 md:mt-10 text-center">
+            {/* ✅ CORRECTION : Utiliser l'UUID réel du plan */}
             <Link
               to={`/paiement-plan/${selectedPlan}`}
               className="inline-flex items-center gap-2 bg-yellow-400 hover:bg-yellow-300 text-black font-semibold px-8 py-3 rounded-xl transition-all transform hover:scale-105"
@@ -388,9 +384,7 @@ const DevenirOrganisateur = () => {
           </div>
         </div>
 
-        {/* ============================================================
-            SECTION AVANTAGES PREMIUM EN DÉTAIL
-            ============================================================ */}
+        {/* SECTION AVANTAGES PREMIUM EN DÉTAIL */}
         <div className="mt-12 md:mt-16 bg-gray-900/50 rounded-2xl p-6 md:p-8 border border-gray-800">
           <div className="flex items-center gap-3 mb-6">
             <Crown className="w-8 h-8 text-yellow-400" />

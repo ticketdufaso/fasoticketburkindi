@@ -3,18 +3,20 @@
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
  * CORRECTIONS :
- * - Vérification du montant
- * - Verrouillage pour éviter les conflits
- * - Transaction marquée immédiatement après validation
- * - ✅ CORRECTION : Vérification dans paiements_organisateurs SANS filtre de statut
- * - ✅ CORRECTION : Recherche avec normalisation pour les ID avec/sans points
- * - ✅ CORRECTION : Mise à jour de la ligne existante (pas de nouveau paiement)
- * - ✅ CORRECTION : Éviter les doublons dans paiements_plans (vérification source + existence)
- * - ✅ CORRECTION : Messages d'erreur explicites pour chaque vérification
- * - ✅ CORRECTION : RLS corrigée (lecture publique)
- * - ✅ CORRECTION : Vérifications dans l'ordre (existence, dépôt, montant, statut)
- * - ✅ CORRECTION : Affichage du nom associé depuis numeros_acceptes
- * - ✅ CORRECTION : Validation Orange Money UNIQUEMENT (pas le téléphone)
+ * - ✅ Utilisation de l'UUID réel du plan pour la recherche
+ * - ✅ Fallback par nom pour rétrocompatibilité
+ * - ✅ Vérification du montant
+ * - ✅ Verrouillage pour éviter les conflits
+ * - ✅ Transaction marquée immédiatement après validation
+ * - ✅ Vérification dans paiements_organisateurs SANS filtre de statut
+ * - ✅ Recherche avec normalisation pour les ID avec/sans points
+ * - ✅ Mise à jour de la ligne existante (pas de nouveau paiement)
+ * - ✅ Éviter les doublons dans paiements_plans (vérification source + existence)
+ * - ✅ Messages d'erreur explicites pour chaque vérification
+ * - ✅ RLS corrigée (lecture publique)
+ * - ✅ Vérifications dans l'ordre (existence, dépôt, montant, statut)
+ * - ✅ Affichage du nom associé depuis numeros_acceptes
+ * - ✅ Validation Orange Money UNIQUEMENT (pas le téléphone)
  */
 
 import React, { useState, useEffect } from 'react'
@@ -59,15 +61,66 @@ const PaiementPlan = () => {
     const fetchPlan = async () => {
       try {
         setLoading(true)
-        const planNom = planId.charAt(0).toUpperCase() + planId.slice(1)
         
-        const { data, error } = await supabase
+        // ✅ ÉTAPE 1 : Recherche par ID (UUID) - Méthode principale
+        let { data, error } = await supabase
           .from('plans')
           .select('*')
-          .eq('nom', planNom)
-          .single()
+          .eq('id', planId)
+          .maybeSingle()
+        
+        // ✅ ÉTAPE 2 : Si non trouvé, essayer par nom (pour rétrocompatibilité)
+        if (!data) {
+          // Essayer avec le nom exact
+          const { data: dataByName, error: errorByName } = await supabase
+            .from('plans')
+            .select('*')
+            .eq('nom', planId)
+            .maybeSingle()
+          
+          if (!errorByName && dataByName) {
+            data = dataByName
+            error = null
+          }
+        }
+        
+        // ✅ ÉTAPE 3 : Si toujours non trouvé, essayer en capitalisant
+        if (!data) {
+          const planNom = planId.charAt(0).toUpperCase() + planId.slice(1).toLowerCase()
+          const { data: dataByCapitalized, error: errorByCapitalized } = await supabase
+            .from('plans')
+            .select('*')
+            .eq('nom', planNom)
+            .maybeSingle()
+          
+          if (!errorByCapitalized && dataByCapitalized) {
+            data = dataByCapitalized
+            error = null
+          }
+        }
+        
+        // ✅ ÉTAPE 4 : Dernier recours - recherche insensible à la casse (ILIKE)
+        if (!data) {
+          const { data: dataByIlike, error: errorByIlike } = await supabase
+            .from('plans')
+            .select('*')
+            .ilike('nom', planId)
+            .maybeSingle()
+          
+          if (!errorByIlike && dataByIlike) {
+            data = dataByIlike
+            error = null
+          }
+        }
 
         if (error) throw error
+        
+        if (!data) {
+          setError('Plan non trouvé. Veuillez vérifier le lien.')
+          setLoading(false)
+          return
+        }
+        
         setPlan(data)
       } catch (error) {
         console.error('Erreur:', error)
