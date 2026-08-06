@@ -213,7 +213,7 @@ const Home = () => {
         throw error
       }
 
-      setSuccess('✅ Merci ! Votre avis est visible immédiatement.')
+      setSuccess('✅ Merci pour votre avis.')
       setNewComment({ nom: '', note: 5, commentaire: '' })
       
       await fetchData(true)

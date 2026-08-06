@@ -44,7 +44,7 @@ const DevenirOrganisateur = () => {
         // Fallback en cas d'absence de données
         setPlans([
           {
-            id: 'basique',
+            id: '11111111-1111-1111-1111-111111111111',
             nom: 'Basique',
             prix: 30000,
             duree: '1 mois',
@@ -64,7 +64,7 @@ const DevenirOrganisateur = () => {
             raw: null
           },
           {
-            id: 'premium',
+            id: '22222222-2222-2222-2222-222222222222',
             nom: 'Premium',
             prix: 50000,
             duree: '3 mois',
@@ -174,7 +174,7 @@ const DevenirOrganisateur = () => {
       // Fallback en cas d'erreur
       setPlans([
         {
-          id: 'basique',
+          id: '11111111-1111-1111-1111-111111111111',
           nom: 'Basique',
           prix: 30000,
           duree: '1 mois',
@@ -194,7 +194,7 @@ const DevenirOrganisateur = () => {
           raw: null
         },
         {
-          id: 'premium',
+          id: '22222222-2222-2222-2222-222222222222',
           nom: 'Premium',
           prix: 50000,
           duree: '3 mois',

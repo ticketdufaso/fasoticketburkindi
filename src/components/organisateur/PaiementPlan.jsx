@@ -3,8 +3,8 @@
  * Règles NASA 1-10
  * Sécurité niveau Google/Windows
  * CORRECTIONS :
- * - ✅ Utilisation de l'UUID réel du plan pour la recherche
- * - ✅ Fallback par nom pour rétrocompatibilité
+ * - ✅ Recherche par ID en priorité (UUID), fallback par nom
+ * - ✅ Utilisation de maybeSingle pour éviter les erreurs
  * - ✅ Vérification du montant
  * - ✅ Verrouillage pour éviter les conflits
  * - ✅ Transaction marquée immédiatement après validation
@@ -61,76 +61,80 @@ const PaiementPlan = () => {
     const fetchPlan = async () => {
       try {
         setLoading(true)
+        setError('')
         
-        // ✅ ÉTAPE 1 : Recherche par ID (UUID) - Méthode principale
-        let { data, error } = await supabase
+        // ✅ ÉTAPE 1 : RECHERCHE PAR ID (UUID) - MÉTHODE PRINCIPALE
+        console.log('🔍 Recherche du plan par ID:', planId)
+        
+        let data = null
+        let error = null
+        
+        // Essayer par ID d'abord (UUID)
+        const { data: dataById, error: errorById } = await supabase
           .from('plans')
           .select('*')
           .eq('id', planId)
           .maybeSingle()
         
-        // ✅ ÉTAPE 2 : Si non trouvé, essayer par nom (pour rétrocompatibilité)
-        if (!data) {
-          // Essayer avec le nom exact
-          const { data: dataByName, error: errorByName } = await supabase
-            .from('plans')
-            .select('*')
-            .eq('nom', planId)
-            .maybeSingle()
+        if (!errorById && dataById) {
+          data = dataById
+          console.log('✅ Plan trouvé par ID:', data.id, data.nom)
+        } else {
+          console.log('⏳ Plan non trouvé par ID, essai par nom...')
           
-          if (!errorByName && dataByName) {
-            data = dataByName
-            error = null
-          }
-        }
-        
-        // ✅ ÉTAPE 3 : Si toujours non trouvé, essayer en capitalisant
-        if (!data) {
+          // ✅ ÉTAPE 2 : FALLBACK PAR NOM (rétrocompatibilité)
           const planNom = planId.charAt(0).toUpperCase() + planId.slice(1).toLowerCase()
-          const { data: dataByCapitalized, error: errorByCapitalized } = await supabase
+          
+          const { data: dataByName, error: errorByName } = await supabase
             .from('plans')
             .select('*')
             .eq('nom', planNom)
             .maybeSingle()
           
-          if (!errorByCapitalized && dataByCapitalized) {
-            data = dataByCapitalized
-            error = null
-          }
-        }
-        
-        // ✅ ÉTAPE 4 : Dernier recours - recherche insensible à la casse (ILIKE)
-        if (!data) {
-          const { data: dataByIlike, error: errorByIlike } = await supabase
-            .from('plans')
-            .select('*')
-            .ilike('nom', planId)
-            .maybeSingle()
-          
-          if (!errorByIlike && dataByIlike) {
-            data = dataByIlike
-            error = null
+          if (!errorByName && dataByName) {
+            data = dataByName
+            console.log('✅ Plan trouvé par nom:', data.id, data.nom)
+          } else {
+            // ✅ ÉTAPE 3 : DERNIER RECOURS - ILIKE (insensible à la casse)
+            console.log('⏳ Plan non trouvé par nom exact, essai ILIKE...')
+            
+            const { data: dataByIlike, error: errorByIlike } = await supabase
+              .from('plans')
+              .select('*')
+              .ilike('nom', `%${planId}%`)
+              .maybeSingle()
+            
+            if (!errorByIlike && dataByIlike) {
+              data = dataByIlike
+              console.log('✅ Plan trouvé par ILIKE:', data.id, data.nom)
+            } else {
+              error = errorByIlike || new Error('Plan non trouvé')
+            }
           }
         }
 
         if (error) throw error
         
         if (!data) {
-          setError('Plan non trouvé. Veuillez vérifier le lien.')
+          setError('❌ Plan non trouvé. Veuillez vérifier le lien ou contacter l\'administrateur.')
           setLoading(false)
           return
         }
         
         setPlan(data)
+        console.log('📦 Plan chargé avec succès:', data.nom, data.prix, 'FCFA')
+        
       } catch (error) {
-        console.error('Erreur:', error)
-        setError('Plan non trouvé')
+        console.error('❌ Erreur chargement plan:', error)
+        setError('Erreur lors du chargement du plan. Veuillez réessayer.')
       } finally {
         setLoading(false)
       }
     }
 
-    fetchPlan()
+    if (planId) {
+      fetchPlan()
+    }
   }, [planId])
 
   // ============================================================
