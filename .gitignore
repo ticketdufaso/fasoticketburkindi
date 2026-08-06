@@ -67,4 +67,4 @@ ehthumbs.db
 .vite/
 
 # Sauvegardes
-*.clean-backup
+*.clean-backup"android-app/.gradle/" 
